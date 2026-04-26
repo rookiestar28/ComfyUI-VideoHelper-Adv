@@ -1,16 +1,11 @@
 # Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
 
 # C extensions
 *.so
 
 # Distribution / packaging
 .Python
-build/
 develop-eggs/
-dist/
 downloads/
 eggs/
 .eggs/
@@ -37,28 +32,21 @@ pip-log.txt
 pip-delete-this-directory.txt
 
 # Unit test / coverage reports
-htmlcov/
 .tox/
 .nox/
-.coverage
 .coverage.*
 .cache
 nosetests.xml
-coverage.xml
 *.cover
 *.py,cover
 .hypothesis/
-.pytest_cache/
 cover/
-AGENTS.md
-reference/
 
 # Translations
 *.mo
 *.pot
 
 # Django stuff:
-*.log
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
@@ -122,11 +110,7 @@ celerybeat.pid
 *.sage.py
 
 # Environments
-.env
 .venv
-env/
-venv/
-ENV/
 env.bak/
 venv.bak/
 
@@ -141,7 +125,6 @@ venv.bak/
 /site
 
 # mypy
-.mypy_cache/
 .dmypy.json
 dmypy.json
 
@@ -155,7 +138,6 @@ dmypy.json
 cython_debug/
 
 # VS Code
-.vscode/
 
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
@@ -167,8 +149,61 @@ cython_debug/
 *.swp
 
 # Local planning / roadmap references
-.planning/
-ROADMAP.md
 tests/TEST_SOP.md
 tests/E2E_TESTING_NOTICE.md
 tests/E2E_TESTING_SOP.md
+
+# Agent/local project exclusions
+.pla*/
+re*/
+RE*/
+ROA*.md
+roa*.md
+AG*.md
+
+# Secrets and local environment
+.env
+.env.*
+*.env
+!.env.example
+!.env.sample
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.venv/
+.venv-*/
+venv/
+ENV/
+
+# Node / frontend tests
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+playwright-report/
+test-results/
+coverage/
+
+# Build, cache, temp, and local tool output
+dist/
+build/
+.cache/
+.tmp/
+tmp/
+temp/
+*.log
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
