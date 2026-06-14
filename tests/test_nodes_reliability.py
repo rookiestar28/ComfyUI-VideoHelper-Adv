@@ -49,6 +49,69 @@ class _FakeImageTensor:
         return self.array
 
 
+class _DummyPipe:
+    def __init__(self, owner):
+        self.owner = owner
+        self.closed = False
+
+    def write(self, data):
+        self.owner.writes.append(data)
+        if self.owner.raise_broken_pipe:
+            raise BrokenPipeError()
+
+    def flush(self):
+        return None
+
+    def close(self):
+        self.closed = True
+
+
+class _DummyStderr:
+    def __init__(self, owner):
+        self.owner = owner
+
+    def read(self):
+        return self.owner.stderr_data
+
+
+class _DummyPopen:
+    def __init__(
+        self,
+        args,
+        *,
+        returncode=0,
+        stderr_data=b"",
+        create_output=False,
+        create_sequence_first_frame=False,
+        raise_broken_pipe=False,
+    ):
+        self.args = args
+        self.returncode = returncode
+        self.stderr_data = stderr_data
+        self.create_output = create_output
+        self.create_sequence_first_frame = create_sequence_first_frame
+        self.raise_broken_pipe = raise_broken_pipe
+        self.writes = []
+        self.stdin = _DummyPipe(self)
+        self.stderr = _DummyStderr(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self.wait()
+        return False
+
+    def wait(self):
+        output_path = Path(self.args[-1])
+        if self.create_output:
+            output_path.write_bytes(b"encoded")
+        if self.create_sequence_first_frame:
+            first_frame = Path(str(output_path).replace("%03d", "001"))
+            first_frame.write_bytes(b"encoded-frame")
+        return self.returncode
+
+
 class NodesReliabilityTests(unittest.TestCase):
     def setUp(self):
         self.workspace = TempWorkspace()
@@ -128,6 +191,72 @@ class NodesReliabilityTests(unittest.TestCase):
         metadata_flag_index = mux_args.index("-f", mux_args.index("-i", mux_args.index("-i") + 1) + 1)
         self.assertLess(metadata_flag_index, codec_index)
         self.assertEqual(mux_args[metadata_flag_index:metadata_flag_index + 4], ["-f", "ffmetadata", "-i", "metadata.txt"])
+
+    def test_ffmpeg_process_raises_on_nonzero_exit(self):
+        output_path = self.paths["output_dir"] / "failed.mp4"
+
+        def fake_popen(args, **_kwargs):
+            return _DummyPopen(args, returncode=1, stderr_data=b"encode failed")
+
+        with mock.patch.object(self.nodes_mod.subprocess, "Popen", side_effect=fake_popen):
+            process = self.nodes_mod.ffmpeg_process(
+                ["ffmpeg"], {"extension": "mp4"}, {}, str(output_path), {}
+            )
+            process.send(None)
+            process.send(b"frame")
+            with self.assertRaisesRegex(Exception, "exit code 1"):
+                process.send(None)
+        self.assertFalse(output_path.exists())
+
+    def test_ffmpeg_process_raises_when_expected_output_missing(self):
+        output_path = self.paths["output_dir"] / "missing.mp4"
+
+        def fake_popen(args, **_kwargs):
+            return _DummyPopen(args, returncode=0, stderr_data=b"")
+
+        with mock.patch.object(self.nodes_mod.subprocess, "Popen", side_effect=fake_popen):
+            process = self.nodes_mod.ffmpeg_process(
+                ["ffmpeg"], {"extension": "mp4"}, {}, str(output_path), {}
+            )
+            process.send(None)
+            process.send(b"frame")
+            with self.assertRaisesRegex(Exception, "did not create expected output"):
+                process.send(None)
+
+    def test_ffmpeg_process_accepts_existing_sequence_first_frame(self):
+        output_path = self.paths["output_dir"] / "frames_%03d.png"
+
+        def fake_popen(args, **_kwargs):
+            return _DummyPopen(args, returncode=0, create_sequence_first_frame=True)
+
+        with mock.patch.object(self.nodes_mod.subprocess, "Popen", side_effect=fake_popen):
+            process = self.nodes_mod.ffmpeg_process(
+                ["ffmpeg"], {"extension": "%03d.png"}, {}, str(output_path), {}
+            )
+            process.send(None)
+            process.send(b"frame")
+            total_frames = process.send(None)
+
+        self.assertEqual(total_frames, 1)
+        self.assertTrue((self.paths["output_dir"] / "frames_001.png").exists())
+
+    def test_ffmpeg_process_counts_frames_when_output_exists(self):
+        output_path = self.paths["output_dir"] / "encoded.mp4"
+
+        def fake_popen(args, **_kwargs):
+            return _DummyPopen(args, returncode=0, create_output=True)
+
+        with mock.patch.object(self.nodes_mod.subprocess, "Popen", side_effect=fake_popen):
+            process = self.nodes_mod.ffmpeg_process(
+                ["ffmpeg"], {"extension": "mp4"}, {}, str(output_path), {}
+            )
+            process.send(None)
+            process.send(b"frame-1")
+            process.send(b"frame-2")
+            total_frames = process.send(None)
+
+        self.assertEqual(total_frames, 2)
+        self.assertTrue(output_path.exists())
 
     def test_prune_outputs_all_option_deletes_all_selected_outputs(self):
         prune = self.nodes_mod.PruneOutputs()

@@ -131,6 +131,69 @@ def tensor_to_bytes(tensor):
     return tensor_to_int(tensor, 8).astype(np.uint8)
 
 
+_SEQUENCE_COUNTER_RE = re.compile(r"%(0?)(\d*)d")
+
+
+def _first_sequence_output_path(file_path):
+    def replace_counter(match):
+        width_text = match.group(2)
+        if width_text:
+            return str(1).zfill(int(width_text))
+        return "1"
+
+    if "%" not in file_path:
+        return None
+    candidate, replacements = _SEQUENCE_COUNTER_RE.subn(replace_counter, file_path, count=1)
+    if replacements == 0:
+        return None
+    return candidate
+
+
+def _ffmpeg_expected_output_exists(file_path):
+    if os.path.exists(file_path):
+        return True
+    sequence_first_frame = _first_sequence_output_path(file_path)
+    return sequence_first_frame is not None and os.path.exists(sequence_first_frame)
+
+
+def _decode_ffmpeg_stderr(stderr):
+    if not stderr:
+        return ""
+    return stderr.decode(*ENCODE_ARGS)
+
+
+def _raise_ffmpeg_failure(context, returncode, stderr):
+    detail = _decode_ffmpeg_stderr(stderr)
+    if not detail:
+        detail = f"ffmpeg exited with code {returncode}"
+    raise Exception(
+        f"An error occurred in the ffmpeg subprocess ({context}, exit code {returncode}):\n"
+        + detail
+    )
+
+
+def _raise_missing_ffmpeg_output(file_path):
+    expected = file_path
+    sequence_first_frame = _first_sequence_output_path(file_path)
+    if sequence_first_frame is not None:
+        expected += f" or first sequence frame {sequence_first_frame}"
+    raise Exception(
+        "The ffmpeg subprocess completed but did not create expected output:\n"
+        + expected
+    )
+
+
+def _finalize_ffmpeg_process(proc, file_path, context):
+    # IMPORTANT: stderr is not a success signal; return code and artifact existence are both required.
+    stderr = proc.stderr.read()
+    returncode = proc.wait()
+    if returncode != 0:
+        _raise_ffmpeg_failure(context, returncode, stderr)
+    if not _ffmpeg_expected_output_exists(file_path):
+        _raise_missing_ffmpeg_output(file_path)
+    return stderr
+
+
 def build_audio_mux_args(video_format, file_path, output_file_with_audio_path, audio, total_frames_output, frame_rate, metadata_path=None):
     if "audio_pass" not in video_format:
         logger.warn("Selected video format does not have explicit audio support")
@@ -162,10 +225,11 @@ def build_audio_mux_args(video_format, file_path, output_file_with_audio_path, a
 
 def ffmpeg_process(args, video_format, video_metadata, file_path, env):
 
-    res = None
+    res = b""
     frame_data = yield
     total_frames_output = 0
     metadata_path = None
+    needs_main_pass = video_format.get('save_metadata', 'False') == 'False'
     if video_format.get('save_metadata', 'False') != 'False':
         # IMPORTANT: keep this comment payload contract aligned with web/js/videoMetadataParser.js.
         # Saved-video workflow re-import depends on the final muxed file retaining this metadata.
@@ -187,22 +251,28 @@ def ffmpeg_process(args, video_format, video_metadata, file_path, env):
                         total_frames_output+=1
                     proc.stdin.flush()
                     proc.stdin.close()
-                    res = proc.stderr.read()
+                    res = _finalize_ffmpeg_process(proc, file_path, "metadata encode")
+                    needs_main_pass = False
                 except BrokenPipeError as e:
                     err = proc.stderr.read()
+                    returncode = proc.wait()
                     #Check if output file exists. If it does, the re-execution
                     #will also fail. This obscures the cause of the error
                     #and seems to never occur concurrent to the metadata issue
                     if os.path.exists(file_path):
-                        raise Exception("An error occurred in the ffmpeg subprocess:\n" \
-                                + err.decode(*ENCODE_ARGS))
-                    #Res was not set
+                        _raise_ffmpeg_failure("metadata encode", returncode, err)
+                    if total_frames_output > 0:
+                        _raise_ffmpeg_failure("metadata encode", returncode, err)
                     print(err.decode(*ENCODE_ARGS), end="", file=sys.stderr)
                     logger.warn("An error occurred when saving with metadata")
+                    total_frames_output = 0
+                    needs_main_pass = True
+                    res = err
         finally:
             if os.path.exists(metadata_path):
                 os.remove(metadata_path)
-    if res != b'':
+    if needs_main_pass:
+        total_frames_output = 0
         with subprocess.Popen(args + [file_path], stderr=subprocess.PIPE,
                               stdin=subprocess.PIPE, env=env) as proc:
             try:
@@ -212,11 +282,11 @@ def ffmpeg_process(args, video_format, video_metadata, file_path, env):
                     total_frames_output+=1
                 proc.stdin.flush()
                 proc.stdin.close()
-                res = proc.stderr.read()
+                res = _finalize_ffmpeg_process(proc, file_path, "main encode")
             except BrokenPipeError as e:
                 res = proc.stderr.read()
-                raise Exception("An error occurred in the ffmpeg subprocess:\n" \
-                        + res.decode(*ENCODE_ARGS))
+                returncode = proc.wait()
+                _raise_ffmpeg_failure("main encode", returncode, res)
     yield total_frames_output
     if len(res) > 0:
         print(res.decode(*ENCODE_ARGS), end="", file=sys.stderr)
