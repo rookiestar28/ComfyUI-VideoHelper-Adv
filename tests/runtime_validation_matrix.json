@@ -1,0 +1,226 @@
+{
+  "schema_version": 1,
+  "project": "ComfyUI-VideoHelper_Adv",
+  "scope": "Phase 11 Video Combine save behavior",
+  "fixture_note": "Workflow JSON files under tests/ are fixtures, not a standalone runner. Runtime scenarios require a local ComfyUI instance with this plugin enabled.",
+  "runtime_status_values": [
+    "not_run_no_local_harness",
+    "passed"
+  ],
+  "scenarios": [
+    {
+      "id": "no_audio_video_output",
+      "items": ["R21", "R22", "R26"],
+      "behavior": "No-audio Video Combine export creates the expected final artifact, reports a previewable final path, and uses filename dimensions when requested.",
+      "fixture_paths": ["tests/simple.json"],
+      "runtime_required": true,
+      "runtime_status": "not_run_no_local_harness",
+      "not_run_reason": "A local ComfyUI server responded, but this repo does not include a workflow runner that constrains generated artifacts to the project workspace; workspace boundary rules prohibit creating validation outputs in an external ComfyUI output/temp directory.",
+      "runtime_observations_required": [
+        "final video artifact exists",
+        "preview payload points at the user-visible artifact",
+        "no orphan output remains after early failures",
+        "filename templates resolve width and height from the first frame"
+      ],
+      "repo_substitutes": [
+        {
+          "type": "unit_tests",
+          "path": "tests/test_nodes_reliability.py",
+          "tests": [
+            "test_ffmpeg_process_counts_frames_when_output_exists",
+            "test_video_combine_missing_ffmpeg_preflight_creates_no_utility_png",
+            "test_video_combine_passes_dimensions_to_filename_template"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "audio_connected_output",
+      "items": ["R21", "R23", "R24"],
+      "behavior": "Audio-connected Video Combine export produces a muxed final output without exposing the silent intermediate as final.",
+      "fixture_paths": ["tests/audio.json"],
+      "runtime_required": true,
+      "runtime_status": "not_run_no_local_harness",
+      "not_run_reason": "A local ComfyUI server responded, but audio-connected export requires sample media and artifact writes outside the project workspace unless a repo-local harness redirects outputs safely; no such harness is shipped in this repo.",
+      "runtime_observations_required": [
+        "muxed artifact exists",
+        "silent intermediate is not the final visible result",
+        "audio stream is present in the final container",
+        "metadata survives final mux when enabled"
+      ],
+      "repo_substitutes": [
+        {
+          "type": "unit_tests",
+          "path": "tests/test_nodes_reliability.py",
+          "tests": [
+            "test_video_combine_returns_only_muxed_video_when_audio_present",
+            "test_build_audio_mux_args_adds_ffmetadata_input_for_roundtrip_payload"
+          ]
+        },
+        {
+          "type": "roundtrip_tests",
+          "path": "tests/test_saved_video_metadata_roundtrip.py",
+          "tests": [
+            "test_muxed_mp4_keeps_roundtrip_comment_payload"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "unsupported_audio_format_failure",
+      "items": ["R22", "R23"],
+      "behavior": "Unsupported audio and output-format combinations fail before encode and leave no durable artifacts.",
+      "fixture_paths": [],
+      "fixture_gap_reason": "No existing workflow fixture connects audio to an image-sequence or other unsupported audio output format.",
+      "runtime_required": true,
+      "runtime_status": "not_run_no_local_harness",
+      "not_run_reason": "Requires a purpose-built live ComfyUI workflow and artifact writes outside the project workspace unless a repo-local harness redirects outputs safely; no such harness or fixture exists in this repo.",
+      "runtime_observations_required": [
+        "node reports a clear unsupported audio format error",
+        "no utility PNG or partial video/image artifact is left behind"
+      ],
+      "repo_substitutes": [
+        {
+          "type": "unit_tests",
+          "path": "tests/test_nodes_reliability.py",
+          "tests": [
+            "test_video_combine_rejects_audio_for_image_format_before_writing",
+            "test_video_combine_rejects_audio_for_unsupported_video_format_before_encode"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "metadata_enabled_roundtrip",
+      "items": ["R24"],
+      "behavior": "Metadata-enabled saved videos carry workflow metadata that can be read back by the parser contract.",
+      "fixture_paths": ["tests/audio.json", "tests/batch4x4.json", "tests/loop.json"],
+      "runtime_required": true,
+      "runtime_status": "not_run_no_local_harness",
+      "not_run_reason": "Drag/drop or file-open workflow restore requires a live ComfyUI UI session and generated artifacts outside the project workspace unless a repo-local harness redirects outputs safely; no such browser/runtime harness is included.",
+      "runtime_observations_required": [
+        "saved video contains round-trip workflow metadata",
+        "ComfyUI restores the expected workflow from the saved video"
+      ],
+      "repo_substitutes": [
+        {
+          "type": "roundtrip_tests",
+          "path": "tests/test_saved_video_metadata_roundtrip.py",
+          "tests": [
+            "test_parser_reads_roundtrip_comment_from_supported_video_containers",
+            "test_muxed_mp4_keeps_roundtrip_comment_payload"
+          ]
+        },
+        {
+          "type": "unit_tests",
+          "path": "tests/test_nodes_reliability.py",
+          "tests": [
+            "test_video_combine_save_metadata_true_preserves_utility_png_workflow_metadata"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "metadata_disabled_utility_png",
+      "items": ["R24"],
+      "behavior": "save_metadata=false suppresses prompt/workflow metadata in the utility PNG sidecar and encode metadata payload.",
+      "fixture_paths": ["tests/simple.json"],
+      "runtime_required": true,
+      "runtime_status": "not_run_no_local_harness",
+      "not_run_reason": "Requires live artifact inspection from a ComfyUI execution and generated artifacts outside the project workspace unless a repo-local harness redirects outputs safely; no fixture runner is included.",
+      "runtime_observations_required": [
+        "utility PNG contains no prompt/workflow text chunks",
+        "final video contains no workflow metadata when disabled"
+      ],
+      "repo_substitutes": [
+        {
+          "type": "unit_tests",
+          "path": "tests/test_nodes_reliability.py",
+          "tests": [
+            "test_video_combine_save_metadata_false_suppresses_utility_png_workflow_metadata"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "image_sequence_output_and_prune",
+      "items": ["R21", "R25"],
+      "behavior": "Image-sequence exports expose concrete generated frame paths and prune deletes frames only for the selected option.",
+      "fixture_paths": [],
+      "fixture_gap_reason": "No existing workflow fixture selects the 8bit-png or 16bit-png image-sequence format.",
+      "runtime_required": true,
+      "runtime_status": "not_run_no_local_harness",
+      "not_run_reason": "Requires a purpose-built live image-sequence workflow and prune execution with generated artifacts outside the project workspace unless a repo-local harness redirects outputs safely; no runner or fixture exists in this repo.",
+      "runtime_observations_required": [
+        "VHS_FILENAMES contains concrete frame paths",
+        "one-frame preview resolves the concrete 001 frame",
+        "Prune Outputs All removes every generated frame",
+        "Prune Outputs Intermediate and Utility keeps final sequence frames"
+      ],
+      "repo_substitutes": [
+        {
+          "type": "unit_tests",
+          "path": "tests/test_nodes_reliability.py",
+          "tests": [
+            "test_video_combine_expands_image_sequence_outputs_to_frame_paths",
+            "test_prune_outputs_all_deletes_expanded_sequence_frames",
+            "test_prune_outputs_intermediate_and_utility_keeps_sequence_frames"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "filename_template_path_ux",
+      "items": ["R26"],
+      "behavior": "Filename templates use first-frame dimensions and path containment remains delegated to ComfyUI folder_paths.",
+      "fixture_paths": [],
+      "fixture_gap_reason": "No existing workflow fixture uses %width% or %height% in VHS_VideoCombine filename_prefix.",
+      "runtime_required": true,
+      "runtime_status": "not_run_no_local_harness",
+      "not_run_reason": "Requires live workflow execution with a filename template and generated artifacts outside the project workspace unless a repo-local harness redirects outputs safely; no fixture runner is included.",
+      "runtime_observations_required": [
+        "output filename contains actual first-frame width and height",
+        "outside-output or cross-drive prefixes fail through ComfyUI containment behavior"
+      ],
+      "repo_substitutes": [
+        {
+          "type": "unit_tests",
+          "path": "tests/test_nodes_reliability.py",
+          "tests": [
+            "test_video_combine_passes_dimensions_to_filename_template"
+          ]
+        },
+        {
+          "type": "source_reference",
+          "path": "reference/ComfyUI/folder_paths.py",
+          "tests": []
+        }
+      ]
+    },
+    {
+      "id": "partial_artifact_cleanup_and_prune_safety",
+      "items": ["R22", "R25"],
+      "behavior": "Failures after write-start clean partial artifacts only inside output/temp roots, and prune validates all deletion candidates before deleting.",
+      "fixture_paths": [],
+      "fixture_gap_reason": "Cleanup and outside-root rejection are safer and more deterministic through isolated temp-root unit tests than through live UI fixtures.",
+      "runtime_required": true,
+      "runtime_status": "not_run_no_local_harness",
+      "not_run_reason": "Live failure injection would require a custom runtime harness that constrains generated artifacts to the project workspace; no such harness is included.",
+      "runtime_observations_required": [
+        "partial artifacts are removed after encode failure",
+        "outside-root prune candidates are rejected before any deletion"
+      ],
+      "repo_substitutes": [
+        {
+          "type": "unit_tests",
+          "path": "tests/test_nodes_reliability.py",
+          "tests": [
+            "test_video_combine_cleans_partial_artifacts_after_encode_failure",
+            "test_output_cleanup_rejects_outside_roots",
+            "test_prune_outputs_rejects_outside_root_before_deleting_anything"
+          ]
+        }
+      ]
+    }
+  ]
+}
