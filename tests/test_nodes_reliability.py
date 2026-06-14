@@ -139,20 +139,18 @@ class NodesReliabilityTests(unittest.TestCase):
     def tearDown(self):
         self.workspace.cleanup()
 
-    def test_build_audio_mux_args_injects_default_audio_codec(self):
+    def test_build_audio_mux_args_rejects_format_without_audio_pass(self):
         video_format = {"extension": "webm"}
-        mux_args, channels = self.nodes_mod.build_audio_mux_args(
-            video_format,
-            "silent.webm",
-            "with-audio.webm",
-            {"waveform": _FakeWaveform(), "sample_rate": 44100},
-            total_frames_output=8,
-            frame_rate=8,
-        )
-        self.assertEqual(channels, 2)
-        self.assertIn("-c:a", mux_args)
-        self.assertIn("libopus", mux_args)
-        self.assertEqual(video_format["audio_pass"], ["-c:a", "libopus"])
+        with self.assertRaisesRegex(Exception, "does not support audio"):
+            self.nodes_mod.build_audio_mux_args(
+                video_format,
+                "silent.webm",
+                "with-audio.webm",
+                {"waveform": _FakeWaveform(), "sample_rate": 44100},
+                total_frames_output=8,
+                frame_rate=8,
+            )
+        self.assertNotIn("audio_pass", video_format)
 
     def test_build_audio_mux_args_adds_ffmetadata_input_for_roundtrip_payload(self):
         video_format = {"extension": "mp4", "audio_pass": ["-c:a", "aac"]}
@@ -291,6 +289,65 @@ class NodesReliabilityTests(unittest.TestCase):
                     filename_prefix="Test",
                     format="video/fake-format",
                     save_output=True,
+                    extra_pnginfo={"workflow": {"extra": {"VHS_MetadataImage": True}}},
+                )
+
+        self.assertEqual(list(self.paths["output_dir"].iterdir()), [])
+
+    def test_video_combine_rejects_audio_for_image_format_before_writing(self):
+        combine = self.nodes_mod.VideoCombine()
+        images = [_FakeImageTensor(np.zeros((2, 2, 3), dtype=np.float32))]
+        audio = {"waveform": _FakeWaveform(), "sample_rate": 44100}
+
+        with self.assertRaisesRegex(Exception, "does not support audio"):
+            combine.combine_video(
+                images=images,
+                frame_rate=8,
+                loop_count=0,
+                filename_prefix="Test",
+                format="image/gif",
+                save_output=True,
+                audio=audio,
+                extra_pnginfo={"workflow": {"extra": {"VHS_MetadataImage": True}}},
+            )
+
+        self.assertEqual(list(self.paths["output_dir"].iterdir()), [])
+
+    def test_video_combine_rejects_audio_for_unsupported_video_format_before_encode(self):
+        combine = self.nodes_mod.VideoCombine()
+        images = [_FakeImageTensor(np.zeros((2, 2, 3), dtype=np.float32))]
+        audio = {"waveform": _FakeWaveform(), "sample_rate": 44100}
+
+        def fake_ffmpeg_process(_args, _video_format, _metadata, file_path, _env):
+            frame_data = yield
+            total = 0
+            while frame_data is not None:
+                total += 1
+                frame_data = yield
+            Path(file_path).write_bytes(b"silent-video")
+            yield total
+
+        def fake_subprocess_run(args, input=None, env=None, capture_output=None, check=None):
+            Path(args[-1]).write_bytes(b"muxed-video")
+            return types.SimpleNamespace(stderr=b"")
+
+        with mock.patch.object(self.nodes_mod, "ffmpeg_path", "/usr/bin/ffmpeg"), \
+             mock.patch.object(
+                 self.nodes_mod,
+                 "apply_format_widgets",
+                 lambda _ext, _kwargs: {"extension": "%03d.png", "main_pass": [], "supports_audio": False},
+             ), \
+             mock.patch.object(self.nodes_mod, "ffmpeg_process", fake_ffmpeg_process), \
+             mock.patch.object(self.nodes_mod.subprocess, "run", side_effect=fake_subprocess_run):
+            with self.assertRaisesRegex(Exception, "does not support audio"):
+                combine.combine_video(
+                    images=images,
+                    frame_rate=8,
+                    loop_count=0,
+                    filename_prefix="Test",
+                    format="video/fake-format",
+                    save_output=True,
+                    audio=audio,
                     extra_pnginfo={"workflow": {"extra": {"VHS_MetadataImage": True}}},
                 )
 

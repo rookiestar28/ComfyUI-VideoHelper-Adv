@@ -12,6 +12,7 @@
     ],
     "fake_trc": "bt709",
     "audio_pass": ["-c:a", "aac"],
+    "supports_audio": true,
     "save_metadata": ["save_metadata", "BOOLEAN", {"default": true}],
     "extension": "mp4"
 }

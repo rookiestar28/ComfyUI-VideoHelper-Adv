@@ -1,7 +1,11 @@
 import unittest
 from pathlib import Path
 
-from videohelpersuite.format_validation import materialize_format_file, validate_format_directory
+from videohelpersuite.format_validation import (
+    materialize_format_file,
+    validate_format_data,
+    validate_format_directory,
+)
 
 
 class VideoFormatValidationTests(unittest.TestCase):
@@ -21,6 +25,18 @@ class VideoFormatValidationTests(unittest.TestCase):
         materialized = materialize_format_file(Path("video_formats/webm.json"))
         self.assertIn("-c:v", materialized["main_pass"])
         self.assertIn("libvpx-vp9", materialized["main_pass"])
+
+    def test_supports_audio_true_requires_audio_pass(self):
+        result = validate_format_data(
+            "bad.json",
+            {
+                "extension": "mp4",
+                "main_pass": ["-n", "-c:v", "libx264"],
+                "supports_audio": True,
+            },
+            capabilities=None,
+        )
+        self.assertIn("'supports_audio' is true but 'audio_pass' is missing", result.errors)
 
 
 if __name__ == "__main__":

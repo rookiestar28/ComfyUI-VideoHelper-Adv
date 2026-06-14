@@ -21,6 +21,7 @@ ALLOWED_TOP_LEVEL_KEYS = {
     "megabit",
     "pre_pass",
     "save_metadata",
+    "supports_audio",
     "trim_to_audio",
 }
 
@@ -196,6 +197,13 @@ def validate_format_data(name: str, data: dict, capabilities: CapabilityReport |
 
     if "audio_pass" in data and not audio_codecs:
         warnings.append("'audio_pass' is present but no explicit '-c:a' was found")
+
+    if "supports_audio" in data and not isinstance(data["supports_audio"], bool):
+        errors.append("'supports_audio' must be a boolean")
+    if data.get("supports_audio") is True and "audio_pass" not in data:
+        errors.append("'supports_audio' is true but 'audio_pass' is missing")
+    if data.get("supports_audio") is False and "audio_pass" in data:
+        errors.append("'supports_audio' is false but 'audio_pass' is present")
 
     if capabilities is not None:
         for codec in video_codecs:

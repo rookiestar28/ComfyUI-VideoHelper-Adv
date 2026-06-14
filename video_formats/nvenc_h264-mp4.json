@@ -8,6 +8,7 @@
     ],
     "fake_trc": "bt709",
     "audio_pass": ["-c:a", "aac"],
+    "supports_audio": true,
     "bitrate": ["bitrate","INT", {"default": 10, "min": 1, "max": 999, "step": 1 }],
     "megabit": ["megabit","BOOLEAN", {"default": true}],
     "save_metadata": ["save_metadata", "BOOLEAN", {"default": true}],

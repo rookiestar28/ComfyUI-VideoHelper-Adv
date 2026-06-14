@@ -17,6 +17,7 @@
     ],
     "fake_trc": "bt709",
     "audio_pass": ["-c:a", "pcm_s16le"],
+    "supports_audio": true,
     "extension": "mov",
     "extra_widgets": [["profile", ["lt", "standard", "hq", "4444", "4444xq"], {"default": "hq"}]]
 }

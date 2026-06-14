@@ -3,5 +3,6 @@
     [
         "-n"
     ],
-    "extension": "%03d.png"
+    "extension": "%03d.png",
+    "supports_audio": false
 }

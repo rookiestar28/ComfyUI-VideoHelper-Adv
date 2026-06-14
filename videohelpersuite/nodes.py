@@ -224,10 +224,34 @@ def _cleanup_partial_output_files(file_paths):
         cleaned.add(file_path)
 
 
+def _get_audio_waveform(audio):
+    if audio is None:
+        return None
+    try:
+        return audio['waveform']
+    except Exception:
+        return None
+
+
+def _video_format_supports_audio(video_format):
+    if video_format.get("supports_audio") is False:
+        return False
+    return "audio_pass" in video_format
+
+
+def _raise_unsupported_audio_format(video_format, format_name=None):
+    extension = video_format.get("extension", "unknown")
+    label = format_name or extension
+    raise Exception(
+        "Selected output format does not support audio: "
+        + f"format={label} extension={extension}. "
+        + "Choose a format with explicit audio support."
+    )
+
+
 def build_audio_mux_args(video_format, file_path, output_file_with_audio_path, audio, total_frames_output, frame_rate, metadata_path=None):
-    if "audio_pass" not in video_format:
-        logger.warn("Selected video format does not have explicit audio support")
-        video_format["audio_pass"] = ["-c:a", "libopus"]
+    if not _video_format_supports_audio(video_format):
+        _raise_unsupported_audio_format(video_format)
     channels = audio['waveform'].size(1)
     min_audio_dur = total_frames_output / frame_rate + 1
     if video_format.get('trim_to_audio', 'False') != 'False':
@@ -489,9 +513,12 @@ class VideoCombine:
             extra_options = {}
         metadata.add_text("CreationTime", datetime.datetime.now().isoformat(" ")[:19])
 
+        a_waveform = _get_audio_waveform(audio)
         format_type, format_ext = format.split("/")
         video_format = None
         if format_type == "image":
+            if a_waveform is not None:
+                _raise_unsupported_audio_format({"extension": format_ext, "supports_audio": False}, format)
             if meta_batch is not None:
                 raise Exception("Pillow('image/') formats are not compatible with batched output")
         else:
@@ -506,6 +533,8 @@ class VideoCombine:
             has_alpha = first_image.shape[-1] == 4
             kwargs["has_alpha"] = has_alpha
             video_format = apply_format_widgets(format_ext, kwargs)
+            if a_waveform is not None and not _video_format_supports_audio(video_format):
+                _raise_unsupported_audio_format(video_format, format)
             if "pre_pass" in video_format and meta_batch is not None:
                 #Performing a prepass requires keeping access to all frames.
                 #Potential solutions include keeping just output frames in
@@ -701,13 +730,6 @@ class VideoCombine:
                     #batch is unfinished
                     #TODO: Check if empty output breaks other custom nodes
                     return {"ui": {"unfinished_batch": [True]}, "result": ((save_output, []),)}
-                a_waveform = None
-                if audio is not None:
-                    try:
-                        #safely check if audio produced by VHS_LoadVideo actually exists
-                        a_waveform = audio['waveform']
-                    except:
-                        pass
                 final_output_path = file_path
                 final_output_name = file
                 if a_waveform is not None:
