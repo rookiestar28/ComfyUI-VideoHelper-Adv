@@ -353,6 +353,119 @@ class NodesReliabilityTests(unittest.TestCase):
 
         self.assertEqual(list(self.paths["output_dir"].iterdir()), [])
 
+    def test_video_combine_save_metadata_false_suppresses_utility_png_workflow_metadata(self):
+        combine = self.nodes_mod.VideoCombine()
+        images = [_FakeImageTensor(np.zeros((2, 2, 3), dtype=np.float32))]
+        prompt = {"1": {"class_type": "SyntheticPrompt"}}
+        extra_pnginfo = {
+            "workflow": {
+                "extra": {"VHS_MetadataImage": True},
+                "nodes": [{"id": 1, "type": "SyntheticNode"}],
+            }
+        }
+        captured = {}
+
+        def fake_ffmpeg_process(_args, _video_format, video_metadata, file_path, _env):
+            captured["video_metadata"] = dict(video_metadata)
+            frame_data = yield
+            total = 0
+            while frame_data is not None:
+                total += 1
+                frame_data = yield
+            Path(file_path).write_bytes(b"video")
+            yield total
+
+        with mock.patch.object(self.nodes_mod, "ffmpeg_path", "/usr/bin/ffmpeg"), \
+             mock.patch.object(
+                 self.nodes_mod,
+                 "apply_format_widgets",
+                 lambda _ext, _kwargs: {
+                     "extension": "mp4",
+                     "main_pass": [],
+                     "save_metadata": "False",
+                 },
+             ), \
+             mock.patch.object(self.nodes_mod, "ffmpeg_process", fake_ffmpeg_process):
+            result = combine.combine_video(
+                images=images,
+                frame_rate=8,
+                loop_count=0,
+                filename_prefix="Test",
+                format="video/fake-format",
+                save_output=True,
+                prompt=prompt,
+                extra_pnginfo=extra_pnginfo,
+            )
+
+        output_files = result["result"][0][1]
+        self.assertEqual(captured["video_metadata"], {})
+        self.assertEqual(len(output_files), 2)
+        self.assertTrue(output_files[0].endswith(".png"))
+
+        with self.nodes_mod.Image.open(output_files[0]) as sidecar:
+            png_text = sidecar.text
+
+        self.assertIn("CreationTime", png_text)
+        self.assertNotIn("prompt", png_text)
+        self.assertNotIn("workflow", png_text)
+
+    def test_video_combine_save_metadata_true_preserves_utility_png_workflow_metadata(self):
+        combine = self.nodes_mod.VideoCombine()
+        images = [_FakeImageTensor(np.zeros((2, 2, 3), dtype=np.float32))]
+        prompt = {"1": {"class_type": "SyntheticPrompt"}}
+        extra_pnginfo = {
+            "workflow": {
+                "extra": {"VHS_MetadataImage": True},
+                "nodes": [{"id": 1, "type": "SyntheticNode"}],
+            }
+        }
+        captured = {}
+
+        def fake_ffmpeg_process(_args, _video_format, video_metadata, file_path, _env):
+            captured["video_metadata"] = dict(video_metadata)
+            frame_data = yield
+            total = 0
+            while frame_data is not None:
+                total += 1
+                frame_data = yield
+            Path(file_path).write_bytes(b"video")
+            yield total
+
+        with mock.patch.object(self.nodes_mod, "ffmpeg_path", "/usr/bin/ffmpeg"), \
+             mock.patch.object(
+                 self.nodes_mod,
+                 "apply_format_widgets",
+                 lambda _ext, _kwargs: {
+                     "extension": "mp4",
+                     "main_pass": [],
+                     "save_metadata": "True",
+                 },
+             ), \
+             mock.patch.object(self.nodes_mod, "ffmpeg_process", fake_ffmpeg_process):
+            result = combine.combine_video(
+                images=images,
+                frame_rate=8,
+                loop_count=0,
+                filename_prefix="Test",
+                format="video/fake-format",
+                save_output=True,
+                prompt=prompt,
+                extra_pnginfo=extra_pnginfo,
+            )
+
+        output_files = result["result"][0][1]
+        self.assertEqual(captured["video_metadata"]["prompt"], prompt)
+        self.assertEqual(captured["video_metadata"]["workflow"], extra_pnginfo["workflow"])
+        self.assertEqual(len(output_files), 2)
+        self.assertTrue(output_files[0].endswith(".png"))
+
+        with self.nodes_mod.Image.open(output_files[0]) as sidecar:
+            png_text = sidecar.text
+
+        self.assertIn("CreationTime", png_text)
+        self.assertIn("prompt", png_text)
+        self.assertIn("workflow", png_text)
+
     def test_video_combine_cleans_partial_artifacts_after_encode_failure(self):
         combine = self.nodes_mod.VideoCombine()
         images = [_FakeImageTensor(np.zeros((2, 2, 3), dtype=np.float32))]

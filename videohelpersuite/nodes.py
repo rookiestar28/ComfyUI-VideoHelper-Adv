@@ -249,6 +249,33 @@ def _raise_unsupported_audio_format(video_format, format_name=None):
     )
 
 
+def _get_workflow_extra_options(extra_pnginfo):
+    if extra_pnginfo is None:
+        return {}
+    return extra_pnginfo.get('workflow', {}).get('extra', {})
+
+
+def _video_format_saves_metadata(video_format):
+    if video_format is None:
+        return True
+    return video_format.get('save_metadata', 'False') != 'False'
+
+
+def _build_output_metadata(prompt, extra_pnginfo, include_workflow_metadata):
+    metadata = PngInfo()
+    video_metadata = {}
+    if include_workflow_metadata:
+        if prompt is not None:
+            metadata.add_text("prompt", json.dumps(prompt))
+            video_metadata["prompt"] = prompt
+        if extra_pnginfo is not None:
+            for x in extra_pnginfo:
+                metadata.add_text(x, json.dumps(extra_pnginfo[x]))
+                video_metadata[x] = extra_pnginfo[x]
+    metadata.add_text("CreationTime", datetime.datetime.now().isoformat(" ")[:19])
+    return metadata, video_metadata
+
+
 def build_audio_mux_args(video_format, file_path, output_file_with_audio_path, audio, total_frames_output, frame_rate, metadata_path=None):
     if not _video_format_supports_audio(video_format):
         _raise_unsupported_audio_format(video_format)
@@ -499,19 +526,7 @@ class VideoCombine:
             if path not in partial_output_files:
                 partial_output_files.append(path)
 
-        metadata = PngInfo()
-        video_metadata = {}
-        if prompt is not None:
-            metadata.add_text("prompt", json.dumps(prompt))
-            video_metadata["prompt"] = prompt
-        if extra_pnginfo is not None:
-            for x in extra_pnginfo:
-                metadata.add_text(x, json.dumps(extra_pnginfo[x]))
-                video_metadata[x] = extra_pnginfo[x]
-            extra_options = extra_pnginfo.get('workflow', {}).get('extra', {})
-        else:
-            extra_options = {}
-        metadata.add_text("CreationTime", datetime.datetime.now().isoformat(" ")[:19])
+        extra_options = _get_workflow_extra_options(extra_pnginfo)
 
         a_waveform = _get_audio_waveform(audio)
         format_type, format_ext = format.split("/")
@@ -541,6 +556,14 @@ class VideoCombine:
                 #memory or using 3 passes with intermediate file, but
                 #very long gifs probably shouldn't be encouraged
                 raise Exception("Formats which require a pre_pass are incompatible with Batch Manager.")
+
+        # IMPORTANT: save_metadata=False must suppress workflow data in the PNG sidecar too,
+        # not only ffmpeg tags. CreationTime is retained because it is not workflow metadata.
+        metadata, video_metadata = _build_output_metadata(
+            prompt,
+            extra_pnginfo,
+            include_workflow_metadata=_video_format_saves_metadata(video_format),
+        )
 
         if meta_batch is not None and unique_id in meta_batch.outputs:
             (counter, output_process) = meta_batch.outputs[unique_id]

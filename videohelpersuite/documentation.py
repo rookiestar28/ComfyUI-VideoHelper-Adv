@@ -103,7 +103,7 @@ descriptions = {
             'yuva420p': 'Include transparency in the output video'
             }],
         'input_color_depth': 'VHS supports outputting 16bit images. While this produces higher quality output, the difference usually isn\'t visible without postprocessing and it significantly increases file size and processing time.',
-        'save_metadata': 'Determines if metadata for the workflow should be included in the output video file',
+        'save_metadata': 'Determines if workflow metadata is included in the output video file and VHS utility PNG sidecar',
         }
     }],
   'VHS_LoadVideo': ['Load Video 🎥🅥🅗🅢', short_desc('Loads a video from the input folder'),
@@ -613,4 +613,3 @@ def format_descriptions(nodes):
             undocumented_nodes.append(k)
     if len(undocumented_nodes) > 0:
         logger.warning('Some nodes have not been documented %s', undocumented_nodes)
-
