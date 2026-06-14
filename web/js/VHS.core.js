@@ -390,7 +390,7 @@ function initHelpDOM() {
                 if (pos[0] > 0 && pos[0] < n.size[0]
                     && pos[1] > 0 && pos[1] < n.size[1]) {
                     //TODO: provide help specific to element clicked
-                    let inputRows = Math.max(n.inputs?.length || 0, n.outputs?.length || 0)
+                    let inputRows = Math.max(n.inputs?.filter(i => !i.widget)?.length || 0, n.outputs?.length || 0)
                     if (pos[1] < LiteGraph.NODE_SLOT_HEIGHT * inputRows) {
                         let row = Math.floor((pos[1] - 7) / LiteGraph.NODE_SLOT_HEIGHT)
                         if (pos[0] < n.size[0]/2) {
@@ -1068,6 +1068,8 @@ function addAudioPreview(nodeType, isInput=true) {
     chainCallback(nodeType.prototype, "onNodeCreated", function() {
         var element = document.createElement("audio");
         element.controls = true
+        element.style['width'] = "100%"
+        element.style['minHeight'] = "50px"
         const previewNode = this;
         var previewWidget = this.addDOMWidget("audiopreview", "preview", element, {
             serialize: false,
