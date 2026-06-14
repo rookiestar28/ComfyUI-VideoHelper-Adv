@@ -466,6 +466,42 @@ class NodesReliabilityTests(unittest.TestCase):
         self.assertIn("prompt", png_text)
         self.assertIn("workflow", png_text)
 
+    def test_video_combine_passes_dimensions_to_filename_template(self):
+        combine = self.nodes_mod.VideoCombine()
+        images = [_FakeImageTensor(np.zeros((4, 6, 3), dtype=np.float32))]
+
+        def fake_ffmpeg_process(_args, _video_format, _metadata, file_path, _env):
+            frame_data = yield
+            total = 0
+            while frame_data is not None:
+                total += 1
+                frame_data = yield
+            Path(file_path).write_bytes(b"video")
+            yield total
+
+        with mock.patch.object(self.nodes_mod, "ffmpeg_path", "/usr/bin/ffmpeg"), \
+             mock.patch.object(
+                 self.nodes_mod,
+                 "apply_format_widgets",
+                 lambda _ext, _kwargs: {"extension": "mp4", "main_pass": []},
+             ), \
+             mock.patch.object(self.nodes_mod, "ffmpeg_process", fake_ffmpeg_process):
+            result = combine.combine_video(
+                images=images,
+                frame_rate=8,
+                loop_count=0,
+                filename_prefix="Size_%width%x%height%",
+                format="video/fake-format",
+                save_output=True,
+                extra_pnginfo={"workflow": {"extra": {"VHS_MetadataImage": True}}},
+            )
+
+        output_files = result["result"][0][1]
+        self.assertEqual([Path(path).name for path in output_files], [
+            "Size_6x4_00001.png",
+            "Size_6x4_00001.mp4",
+        ])
+
     def test_video_combine_cleans_partial_artifacts_after_encode_failure(self):
         combine = self.nodes_mod.VideoCombine()
         images = [_FakeImageTensor(np.zeros((2, 2, 3), dtype=np.float32))]

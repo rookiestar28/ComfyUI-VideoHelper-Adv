@@ -97,9 +97,15 @@ def install_base_stubs(temp_root):
     folder_paths_module.annotated_filepath = _annotated_filepath
     folder_paths_module.get_annotated_filepath = lambda path: str(input_dir / path)
     folder_paths_module.exists_annotated_filepath = lambda path: (input_dir / path).exists()
-    folder_paths_module.get_save_image_path = (
-        lambda prefix, output_dir: (str(output_dir), prefix, 0, "", prefix)
-    )
+    def get_save_image_path(prefix, output_dir, image_width=0, image_height=0):
+        resolved_prefix = (
+            prefix
+            .replace("%width%", str(image_width))
+            .replace("%height%", str(image_height))
+        )
+        return (str(output_dir), resolved_prefix, 0, "", resolved_prefix)
+
+    folder_paths_module.get_save_image_path = get_save_image_path
     folder_paths_module.get_filename_list = lambda _name: []
     folder_paths_module.get_full_path = lambda _name, filename: str(temp_root / filename)
     sys.modules["folder_paths"] = folder_paths_module

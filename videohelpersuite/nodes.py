@@ -579,7 +579,12 @@ class VideoCombine:
             _,
             subfolder,
             _,
-        ) = folder_paths.get_save_image_path(filename_prefix, output_dir)
+        ) = folder_paths.get_save_image_path(
+            filename_prefix,
+            output_dir,
+            first_image.shape[1],
+            first_image.shape[0],
+        )
         output_files = []
         partial_output_files = []
 
