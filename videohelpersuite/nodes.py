@@ -132,6 +132,7 @@ def tensor_to_bytes(tensor):
 
 
 _SEQUENCE_COUNTER_RE = re.compile(r"%(0?)(\d*)d")
+_NUMBERED_SEQUENCE_FILE_RE = re.compile(r"^(.*?)(\d+)(\.[^.]*)$")
 
 
 def _first_sequence_output_path(file_path):
@@ -147,6 +148,66 @@ def _first_sequence_output_path(file_path):
     if replacements == 0:
         return None
     return candidate
+
+
+def _sequence_output_paths(file_path, frame_count):
+    try:
+        count = int(frame_count)
+    except (TypeError, ValueError):
+        return None
+    if count <= 0 or "%" not in file_path:
+        return None
+
+    output_paths = []
+    for frame_index in range(1, count + 1):
+        def replace_counter(match):
+            width_text = match.group(2)
+            if width_text:
+                return str(frame_index).zfill(int(width_text))
+            return str(frame_index)
+
+        candidate, replacements = _SEQUENCE_COUNTER_RE.subn(replace_counter, file_path, count=1)
+        if replacements == 0:
+            return None
+        output_paths.append(candidate)
+    return output_paths
+
+
+def _paths_form_numbered_sequence(paths):
+    if len(paths) < 2:
+        return False
+
+    first_match = None
+    numbers = []
+    for path in paths:
+        match = _NUMBERED_SEQUENCE_FILE_RE.fullmatch(os.path.basename(path))
+        if match is None:
+            return False
+        directory = os.path.dirname(os.path.abspath(path))
+        parts = (directory, match.group(1), len(match.group(2)), match.group(3))
+        if first_match is None:
+            first_match = parts
+        elif parts != first_match:
+            return False
+        numbers.append(int(match.group(2)))
+
+    return numbers == list(range(numbers[0], numbers[0] + len(numbers)))
+
+
+def _split_output_files(output_files):
+    files = list(output_files)
+    if len(files) == 0:
+        return [], [], []
+    if _paths_form_numbered_sequence(files):
+        return [], [], files
+    if len(files) == 1:
+        return [], [], files
+
+    utility_files = [files[0]]
+    remaining_files = files[1:]
+    if _paths_form_numbered_sequence(remaining_files):
+        return utility_files, [], remaining_files
+    return utility_files, files[1:-1], [files[-1]]
 
 
 def _ffmpeg_expected_output_exists(file_path):
@@ -795,10 +856,15 @@ class VideoCombine:
                     debug_log("video_mux_complete", silent_path=file_path, muxed_path=output_file_with_audio_path)
                     final_output_path = output_file_with_audio_path
                     final_output_name = output_file_with_audio
-                output_files.append(final_output_path)
+                sequence_output_paths = _sequence_output_paths(final_output_path, total_frames_output)
+                if sequence_output_paths is not None:
+                    output_files.extend(sequence_output_paths)
+                else:
+                    output_files.append(final_output_path)
                 file = final_output_name
             if extra_options.get('VHS_KeepIntermediate', True) == False:
-                for intermediate in output_files[1:-1]:
+                _, intermediate_files, _ = _split_output_files(output_files)
+                for intermediate in intermediate_files:
                     if os.path.exists(intermediate):
                         os.remove(intermediate)
             preview = {
@@ -985,22 +1051,23 @@ class PruneOutputs:
     def prune_outputs(self, filenames, options):
         if len(filenames[1]) == 0:
             return ()
-        assert(len(filenames[1]) <= 3 and len(filenames[1]) >= 1)
+        utility_files, intermediate_files, final_files = _split_output_files(filenames[1])
         delete_list = []
         if options in ["Intermediate", "Intermediate and Utility", "All"]:
-            delete_list += filenames[1][1:-1]
+            delete_list += intermediate_files
         if options in ["Intermediate and Utility", "All"]:
-            delete_list.append(filenames[1][0])
+            delete_list += utility_files
         if options in ["All"]:
-            delete_list.append(filenames[1][-1])
+            delete_list += final_files
+        delete_list = list(dict.fromkeys(delete_list))
 
         output_dirs = [folder_paths.get_output_directory(),
                        folder_paths.get_temp_directory()]
         for file in delete_list:
             #Check that path is actually an output directory
-            if (os.path.commonpath([output_dirs[0], file]) != output_dirs[0]) \
-                    and (os.path.commonpath([output_dirs[1], file]) != output_dirs[1]):
+            if not any(_path_is_inside_directory(file, directory) for directory in output_dirs):
                         raise Exception("Tried to prune output from invalid directory: " + file)
+        for file in delete_list:
             if os.path.exists(file):
                 os.remove(file)
         return ()

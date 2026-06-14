@@ -509,6 +509,53 @@ class NodesReliabilityTests(unittest.TestCase):
 
         self.assertTrue(outside_path.exists())
 
+    def test_video_combine_expands_image_sequence_outputs_to_frame_paths(self):
+        combine = self.nodes_mod.VideoCombine()
+        images = [
+            _FakeImageTensor(np.zeros((2, 2, 3), dtype=np.float32)),
+            _FakeImageTensor(np.zeros((2, 2, 3), dtype=np.float32)),
+            _FakeImageTensor(np.zeros((2, 2, 3), dtype=np.float32)),
+        ]
+
+        def fake_ffmpeg_process(_args, _video_format, _metadata, file_path, _env):
+            frame_data = yield
+            total = 0
+            while frame_data is not None:
+                total += 1
+                frame_data = yield
+            for frame_index in range(1, total + 1):
+                Path(str(file_path).replace("%03d", f"{frame_index:03d}")).write_bytes(b"frame")
+            yield total
+
+        with mock.patch.object(self.nodes_mod, "ffmpeg_path", "/usr/bin/ffmpeg"), \
+             mock.patch.object(
+                 self.nodes_mod,
+                 "apply_format_widgets",
+                 lambda _ext, _kwargs: {"extension": "%03d.png", "main_pass": []},
+             ), \
+             mock.patch.object(self.nodes_mod, "ffmpeg_process", fake_ffmpeg_process):
+            result = combine.combine_video(
+                images=images,
+                frame_rate=8,
+                loop_count=0,
+                filename_prefix="Test",
+                format="video/fake-format",
+                save_output=True,
+                extra_pnginfo={"workflow": {"extra": {"VHS_MetadataImage": True}}},
+            )
+
+        output_files = result["result"][0][1]
+        self.assertEqual(len(output_files), 4)
+        self.assertTrue(output_files[0].endswith(".png"))
+        self.assertFalse(any("%03d" in path for path in output_files))
+        self.assertEqual([Path(path).name for path in output_files[1:]], [
+            "Test_00001.001.png",
+            "Test_00001.002.png",
+            "Test_00001.003.png",
+        ])
+        for frame_path in output_files[1:]:
+            self.assertTrue(os.path.exists(frame_path))
+
     def test_prune_outputs_all_option_deletes_all_selected_outputs(self):
         prune = self.nodes_mod.PruneOutputs()
         files = []
@@ -519,6 +566,53 @@ class NodesReliabilityTests(unittest.TestCase):
         prune.prune_outputs((True, files), "All")
         for path in files:
             self.assertFalse(os.path.exists(path))
+
+    def test_prune_outputs_intermediate_and_utility_keeps_sequence_frames(self):
+        prune = self.nodes_mod.PruneOutputs()
+        sidecar = self.paths["output_dir"] / "Test_00001.png"
+        frames = [
+            self.paths["output_dir"] / "Test_00001.001.png",
+            self.paths["output_dir"] / "Test_00001.002.png",
+            self.paths["output_dir"] / "Test_00001.003.png",
+        ]
+        for path in [sidecar, *frames]:
+            path.write_bytes(b"x")
+
+        prune.prune_outputs((True, [str(sidecar), *[str(frame) for frame in frames]]), "Intermediate and Utility")
+
+        self.assertFalse(sidecar.exists())
+        for frame in frames:
+            self.assertTrue(frame.exists())
+
+    def test_prune_outputs_all_deletes_expanded_sequence_frames(self):
+        prune = self.nodes_mod.PruneOutputs()
+        sidecar = self.paths["output_dir"] / "Test_00001.png"
+        frames = [
+            self.paths["output_dir"] / "Test_00001.001.png",
+            self.paths["output_dir"] / "Test_00001.002.png",
+            self.paths["output_dir"] / "Test_00001.003.png",
+        ]
+        for path in [sidecar, *frames]:
+            path.write_bytes(b"x")
+
+        prune.prune_outputs((True, [str(sidecar), *[str(frame) for frame in frames]]), "All")
+
+        self.assertFalse(sidecar.exists())
+        for frame in frames:
+            self.assertFalse(frame.exists())
+
+    def test_prune_outputs_rejects_outside_root_before_deleting_anything(self):
+        prune = self.nodes_mod.PruneOutputs()
+        sidecar = self.paths["output_dir"] / "Test_00001.png"
+        outside = self.workspace.path / "outside.png"
+        sidecar.write_bytes(b"inside")
+        outside.write_bytes(b"outside")
+
+        with self.assertRaisesRegex(Exception, "invalid directory"):
+            prune.prune_outputs((True, [str(sidecar), str(outside)]), "All")
+
+        self.assertTrue(sidecar.exists())
+        self.assertTrue(outside.exists())
 
     def test_video_combine_returns_only_muxed_video_when_audio_present(self):
         combine = self.nodes_mod.VideoCombine()
