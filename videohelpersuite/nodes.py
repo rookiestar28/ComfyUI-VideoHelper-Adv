@@ -285,13 +285,9 @@ def _cleanup_partial_output_files(file_paths):
         cleaned.add(file_path)
 
 
-def _get_audio_waveform(audio):
-    if audio is None:
-        return None
-    try:
-        return audio['waveform']
-    except Exception:
-        return None
+def _has_audio_input(audio):
+    # IMPORTANT: Load Video returns lazy audio; probing waveform here can hide extraction failures as silence.
+    return audio is not None
 
 
 def _video_format_supports_audio(video_format):
@@ -594,11 +590,11 @@ class VideoCombine:
 
         extra_options = _get_workflow_extra_options(extra_pnginfo)
 
-        a_waveform = _get_audio_waveform(audio)
+        has_audio = _has_audio_input(audio)
         format_type, format_ext = format.split("/")
         video_format = None
         if format_type == "image":
-            if a_waveform is not None:
+            if has_audio:
                 _raise_unsupported_audio_format({"extension": format_ext, "supports_audio": False}, format)
             if meta_batch is not None:
                 raise Exception("Pillow('image/') formats are not compatible with batched output")
@@ -614,7 +610,7 @@ class VideoCombine:
             has_alpha = first_image.shape[-1] == 4
             kwargs["has_alpha"] = has_alpha
             video_format = apply_format_widgets(format_ext, kwargs)
-            if a_waveform is not None and not _video_format_supports_audio(video_format):
+            if has_audio and not _video_format_supports_audio(video_format):
                 _raise_unsupported_audio_format(video_format, format)
             if "pre_pass" in video_format and meta_batch is not None:
                 #Performing a prepass requires keeping access to all frames.
@@ -821,7 +817,7 @@ class VideoCombine:
                     return {"ui": {"unfinished_batch": [True]}, "result": ((save_output, []),)}
                 final_output_path = file_path
                 final_output_name = file
-                if a_waveform is not None:
+                if has_audio:
                     # Create audio file if input was provided
                     output_file_with_audio = f"{filename}_{counter:05}-audio.{video_format['extension']}"
                     output_file_with_audio_path = os.path.join(full_output_folder, output_file_with_audio)
