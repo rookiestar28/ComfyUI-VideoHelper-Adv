@@ -194,6 +194,36 @@ def _finalize_ffmpeg_process(proc, file_path, context):
     return stderr
 
 
+def _path_is_inside_directory(path, directory):
+    try:
+        return os.path.commonpath(
+            [os.path.abspath(directory), os.path.abspath(path)]
+        ) == os.path.abspath(directory)
+    except ValueError:
+        return False
+
+
+def _remove_output_file_if_exists(file_path, output_dirs=None):
+    if output_dirs is None:
+        output_dirs = [
+            folder_paths.get_output_directory(),
+            folder_paths.get_temp_directory(),
+        ]
+    if not any(_path_is_inside_directory(file_path, directory) for directory in output_dirs):
+        raise Exception("Tried to cleanup output from invalid directory: " + file_path)
+    if os.path.exists(file_path):
+        os.remove(file_path)
+
+
+def _cleanup_partial_output_files(file_paths):
+    cleaned = set()
+    for file_path in reversed(file_paths):
+        if file_path in cleaned:
+            continue
+        _remove_output_file_if_exists(file_path)
+        cleaned.add(file_path)
+
+
 def build_audio_mux_args(video_format, file_path, output_file_with_audio_path, audio, total_frames_output, frame_rate, metadata_path=None):
     if "audio_pass" not in video_format:
         logger.warn("Selected video format does not have explicit audio support")
@@ -439,6 +469,11 @@ class VideoCombine:
             _,
         ) = folder_paths.get_save_image_path(filename_prefix, output_dir)
         output_files = []
+        partial_output_files = []
+
+        def track_output_file(path):
+            if path not in partial_output_files:
+                partial_output_files.append(path)
 
         metadata = PngInfo()
         video_metadata = {}
@@ -453,6 +488,30 @@ class VideoCombine:
         else:
             extra_options = {}
         metadata.add_text("CreationTime", datetime.datetime.now().isoformat(" ")[:19])
+
+        format_type, format_ext = format.split("/")
+        video_format = None
+        if format_type == "image":
+            if meta_batch is not None:
+                raise Exception("Pillow('image/') formats are not compatible with batched output")
+        else:
+            # Use ffmpeg to save a video
+            if ffmpeg_path is None:
+                raise ProcessLookupError(f"ffmpeg is required for video outputs and could not be found.\nIn order to use video outputs, you must either:\n- Install imageio-ffmpeg with pip,\n- Place a ffmpeg executable in {os.path.abspath('')}, or\n- Install ffmpeg and add it to the system path.")
+
+            if manual_format_widgets is not None:
+                logger.warn("Format args can now be passed directly. The manual_format_widgets argument is now deprecated")
+                kwargs.update(manual_format_widgets)
+
+            has_alpha = first_image.shape[-1] == 4
+            kwargs["has_alpha"] = has_alpha
+            video_format = apply_format_widgets(format_ext, kwargs)
+            if "pre_pass" in video_format and meta_batch is not None:
+                #Performing a prepass requires keeping access to all frames.
+                #Potential solutions include keeping just output frames in
+                #memory or using 3 passes with intermediate file, but
+                #very long gifs probably shouldn't be encouraged
+                raise Exception("Formats which require a pre_pass are incompatible with Batch Manager.")
 
         if meta_batch is not None and unique_id in meta_batch.outputs:
             (counter, output_process) = meta_batch.outputs[unique_id]
@@ -480,239 +539,224 @@ class VideoCombine:
         first_image_file = f"{filename}_{counter:05}.png"
         file_path = os.path.join(full_output_folder, first_image_file)
         saved_workflow_image = False
-        if extra_options.get('VHS_MetadataImage', True) != False:
-            Image.fromarray(tensor_to_bytes(first_image)).save(
-                file_path,
-                pnginfo=metadata,
-                compress_level=4,
-            )
-            output_files.append(file_path)
-            saved_workflow_image = True
+        try:
+            if extra_options.get('VHS_MetadataImage', True) != False:
+                track_output_file(file_path)
+                Image.fromarray(tensor_to_bytes(first_image)).save(
+                    file_path,
+                    pnginfo=metadata,
+                    compress_level=4,
+                )
+                output_files.append(file_path)
+                saved_workflow_image = True
 
-        format_type, format_ext = format.split("/")
-        if format_type == "image":
-            if meta_batch is not None:
-                raise Exception("Pillow('image/') formats are not compatible with batched output")
-            image_kwargs = {}
-            if format_ext == "gif":
-                image_kwargs['disposal'] = 2
-            if format_ext == "webp":
-                #Save timestamp information
-                exif = Image.Exif()
-                exif[ExifTags.IFD.Exif] = {36867: datetime.datetime.now().isoformat(" ")[:19]}
-                image_kwargs['exif'] = exif
-                image_kwargs['lossless'] = kwargs.get("lossless", True)
-            file = f"{filename}_{counter:05}.{format_ext}"
-            file_path = os.path.join(full_output_folder, file)
-            if pingpong:
-                images = to_pingpong(images)
-            def frames_gen(images):
-                for i in images:
-                    pbar.update(1)
-                    yield Image.fromarray(tensor_to_bytes(i))
-            frames = frames_gen(images)
-            # Use pillow directly to save an animated image
-            next(frames).save(
-                file_path,
-                format=format_ext.upper(),
-                save_all=True,
-                append_images=frames,
-                duration=round(1000 / frame_rate),
-                loop=loop_count,
-                compress_level=4,
-                **image_kwargs
-            )
-            output_files.append(file_path)
-        else:
-            # Use ffmpeg to save a video
-            if ffmpeg_path is None:
-                raise ProcessLookupError(f"ffmpeg is required for video outputs and could not be found.\nIn order to use video outputs, you must either:\n- Install imageio-ffmpeg with pip,\n- Place a ffmpeg executable in {os.path.abspath('')}, or\n- Install ffmpeg and add it to the system path.")
-
-            if manual_format_widgets is not None:
-                logger.warn("Format args can now be passed directly. The manual_format_widgets argument is now deprecated")
-                kwargs.update(manual_format_widgets)
-
-            has_alpha = first_image.shape[-1] == 4
-            kwargs["has_alpha"] = has_alpha
-            video_format = apply_format_widgets(format_ext, kwargs)
-            dim_alignment = video_format.get("dim_alignment", 2)
-            if (first_image.shape[1] % dim_alignment) or (first_image.shape[0] % dim_alignment):
-                #output frames must be padded
-                to_pad = (-first_image.shape[1] % dim_alignment,
-                          -first_image.shape[0] % dim_alignment)
-                padding = (to_pad[0]//2, to_pad[0] - to_pad[0]//2,
-                           to_pad[1]//2, to_pad[1] - to_pad[1]//2)
-                padfunc = torch.nn.ReplicationPad2d(padding)
-                def pad(image):
-                    image = image.permute((2,0,1))#HWC to CHW
-                    padded = padfunc(image.to(dtype=torch.float32))
-                    return padded.permute((1,2,0))
-                images = map(pad, images)
-                dimensions = (-first_image.shape[1] % dim_alignment + first_image.shape[1],
-                              -first_image.shape[0] % dim_alignment + first_image.shape[0])
-                logger.warn("Output images were not of valid resolution and have had padding applied")
+            if format_type == "image":
+                image_kwargs = {}
+                if format_ext == "gif":
+                    image_kwargs['disposal'] = 2
+                if format_ext == "webp":
+                    #Save timestamp information
+                    exif = Image.Exif()
+                    exif[ExifTags.IFD.Exif] = {36867: datetime.datetime.now().isoformat(" ")[:19]}
+                    image_kwargs['exif'] = exif
+                    image_kwargs['lossless'] = kwargs.get("lossless", True)
+                file = f"{filename}_{counter:05}.{format_ext}"
+                file_path = os.path.join(full_output_folder, file)
+                track_output_file(file_path)
+                if pingpong:
+                    images = to_pingpong(images)
+                def frames_gen(images):
+                    for i in images:
+                        pbar.update(1)
+                        yield Image.fromarray(tensor_to_bytes(i))
+                frames = frames_gen(images)
+                # Use pillow directly to save an animated image
+                next(frames).save(
+                    file_path,
+                    format=format_ext.upper(),
+                    save_all=True,
+                    append_images=frames,
+                    duration=round(1000 / frame_rate),
+                    loop=loop_count,
+                    compress_level=4,
+                    **image_kwargs
+                )
+                output_files.append(file_path)
             else:
-                dimensions = (first_image.shape[1], first_image.shape[0])
-            if pingpong:
-                if meta_batch is not None:
-                    logger.error("pingpong is incompatible with batched output")
-                images = to_pingpong(images)
-                if num_frames > 2:
-                    num_frames += num_frames -2
-                    pbar.total = num_frames
-            if loop_count > 0:
-                loop_args = ["-vf", "loop=loop=" + str(loop_count)+":size=" + str(num_frames)]
-            else:
-                loop_args = []
-            if video_format.get('input_color_depth', '8bit') == '16bit':
-                images = map(tensor_to_shorts, images)
-                if has_alpha:
-                    i_pix_fmt = 'rgba64'
+                dim_alignment = video_format.get("dim_alignment", 2)
+                if (first_image.shape[1] % dim_alignment) or (first_image.shape[0] % dim_alignment):
+                    #output frames must be padded
+                    to_pad = (-first_image.shape[1] % dim_alignment,
+                              -first_image.shape[0] % dim_alignment)
+                    padding = (to_pad[0]//2, to_pad[0] - to_pad[0]//2,
+                               to_pad[1]//2, to_pad[1] - to_pad[1]//2)
+                    padfunc = torch.nn.ReplicationPad2d(padding)
+                    def pad(image):
+                        image = image.permute((2,0,1))#HWC to CHW
+                        padded = padfunc(image.to(dtype=torch.float32))
+                        return padded.permute((1,2,0))
+                    images = map(pad, images)
+                    dimensions = (-first_image.shape[1] % dim_alignment + first_image.shape[1],
+                                  -first_image.shape[0] % dim_alignment + first_image.shape[0])
+                    logger.warn("Output images were not of valid resolution and have had padding applied")
                 else:
-                    i_pix_fmt = 'rgb48'
-            else:
-                images = map(tensor_to_bytes, images)
-                if has_alpha:
-                    i_pix_fmt = 'rgba'
+                    dimensions = (first_image.shape[1], first_image.shape[0])
+                if pingpong:
+                    if meta_batch is not None:
+                        logger.error("pingpong is incompatible with batched output")
+                    images = to_pingpong(images)
+                    if num_frames > 2:
+                        num_frames += num_frames -2
+                        pbar.total = num_frames
+                if loop_count > 0:
+                    loop_args = ["-vf", "loop=loop=" + str(loop_count)+":size=" + str(num_frames)]
                 else:
-                    i_pix_fmt = 'rgb24'
-            file = f"{filename}_{counter:05}.{video_format['extension']}"
-            file_path = os.path.join(full_output_folder, file)
-            bitrate_arg = []
-            bitrate = video_format.get('bitrate')
-            if bitrate is not None:
-                bitrate_arg = ["-b:v", str(bitrate) + "M" if video_format.get('megabit') == 'True' else str(bitrate) + "K"]
-            args = [ffmpeg_path, "-v", "error", "-f", "rawvideo", "-pix_fmt", i_pix_fmt,
-                    # The image data is in an undefined generic RGB color space, which in practice means sRGB.
-                    # sRGB has the same primaries and matrix as BT.709, but a different transfer function (gamma),
-                    # called by the sRGB standard name IEC 61966-2-1. However, video hosting platforms like YouTube
-                    # standardize on full BT.709 and will convert the colors accordingly. This last minute change
-                    # in colors can be confusing to users. We can counter it by lying about the transfer function
-                    # on a per format basis, i.e. for video we will lie to FFmpeg that it is already BT.709. Also,
-                    # because the input data is in RGB (not YUV) it is more efficient (fewer scale filter invocations)
-                    # to specify the input color space as RGB and then later, if the format actually wants YUV,
-                    # to convert it to BT.709 YUV via FFmpeg's -vf "scale=out_color_matrix=bt709".
-                    "-color_range", "pc", "-colorspace", "rgb", "-color_primaries", "bt709",
-                    "-color_trc", video_format.get("fake_trc", "iec61966-2-1"),
-                    "-s", f"{dimensions[0]}x{dimensions[1]}", "-r", str(frame_rate), "-i", "-"] \
-                    + loop_args
-
-            images = map(lambda x: x.tobytes(), images)
-            env=os.environ.copy()
-            if  "environment" in video_format:
-                env.update(video_format["environment"])
-
-            if "pre_pass" in video_format:
-                if meta_batch is not None:
-                    #Performing a prepass requires keeping access to all frames.
-                    #Potential solutions include keeping just output frames in
-                    #memory or using 3 passes with intermediate file, but
-                    #very long gifs probably shouldn't be encouraged
-                    raise Exception("Formats which require a pre_pass are incompatible with Batch Manager.")
-                images = [b''.join(images)]
-                os.makedirs(folder_paths.get_temp_directory(), exist_ok=True)
-                in_args_len = args.index("-i") + 2 # The index after ["-i", "-"]
-                pre_pass_args = args[:in_args_len] + video_format['pre_pass']
-                merge_filter_args(pre_pass_args)
-                try:
-                    subprocess.run(pre_pass_args, input=images[0], env=env,
-                                   capture_output=True, check=True)
-                except subprocess.CalledProcessError as e:
-                    raise Exception("An error occurred in the ffmpeg prepass:\n" \
-                            + e.stderr.decode(*ENCODE_ARGS))
-            if "inputs_main_pass" in video_format:
-                in_args_len = args.index("-i") + 2 # The index after ["-i", "-"]
-                args = args[:in_args_len] + video_format['inputs_main_pass'] + args[in_args_len:]
-
-            if output_process is None:
-                if 'gifski_pass' in video_format:
-                    format = 'image/gif'
-                    output_process = gifski_process(args, dimensions, frame_rate, video_format, file_path, env)
-                    audio = None
+                    loop_args = []
+                if video_format.get('input_color_depth', '8bit') == '16bit':
+                    images = map(tensor_to_shorts, images)
+                    if has_alpha:
+                        i_pix_fmt = 'rgba64'
+                    else:
+                        i_pix_fmt = 'rgb48'
                 else:
-                    args += video_format['main_pass'] + bitrate_arg
-                    merge_filter_args(args)
-                    output_process = ffmpeg_process(args, video_format, video_metadata, file_path, env)
-                #Proceed to first yield
-                output_process.send(None)
-                if meta_batch is not None:
-                    meta_batch.outputs[unique_id] = (counter, output_process)
+                    images = map(tensor_to_bytes, images)
+                    if has_alpha:
+                        i_pix_fmt = 'rgba'
+                    else:
+                        i_pix_fmt = 'rgb24'
+                file = f"{filename}_{counter:05}.{video_format['extension']}"
+                file_path = os.path.join(full_output_folder, file)
+                bitrate_arg = []
+                bitrate = video_format.get('bitrate')
+                if bitrate is not None:
+                    bitrate_arg = ["-b:v", str(bitrate) + "M" if video_format.get('megabit') == 'True' else str(bitrate) + "K"]
+                args = [ffmpeg_path, "-v", "error", "-f", "rawvideo", "-pix_fmt", i_pix_fmt,
+                        # The image data is in an undefined generic RGB color space, which in practice means sRGB.
+                        # sRGB has the same primaries and matrix as BT.709, but a different transfer function (gamma),
+                        # called by the sRGB standard name IEC 61966-2-1. However, video hosting platforms like YouTube
+                        # standardize on full BT.709 and will convert the colors accordingly. This last minute change
+                        # in colors can be confusing to users. We can counter it by lying about the transfer function
+                        # on a per format basis, i.e. for video we will lie to FFmpeg that it is already BT.709. Also,
+                        # because the input data is in RGB (not YUV) it is more efficient (fewer scale filter invocations)
+                        # to specify the input color space as RGB and then later, if the format actually wants YUV,
+                        # to convert it to BT.709 YUV via FFmpeg's -vf "scale=out_color_matrix=bt709".
+                        "-color_range", "pc", "-colorspace", "rgb", "-color_primaries", "bt709",
+                        "-color_trc", video_format.get("fake_trc", "iec61966-2-1"),
+                        "-s", f"{dimensions[0]}x{dimensions[1]}", "-r", str(frame_rate), "-i", "-"] \
+                        + loop_args
 
-            for image in images:
-                pbar.update(1)
-                output_process.send(image)
-            if meta_batch is not None:
-                requeue_workflow((meta_batch.unique_id, not meta_batch.has_closed_inputs))
-            if meta_batch is None or meta_batch.has_closed_inputs:
-                #Close pipe and wait for termination.
-                try:
-                    total_frames_output = output_process.send(None)
-                    output_process.send(None)
-                except StopIteration:
-                    pass
-                if meta_batch is not None:
-                    meta_batch.outputs.pop(unique_id)
-                    if len(meta_batch.outputs) == 0:
-                        meta_batch.reset()
-            else:
-                #batch is unfinished
-                #TODO: Check if empty output breaks other custom nodes
-                return {"ui": {"unfinished_batch": [True]}, "result": ((save_output, []),)}
-            a_waveform = None
-            if audio is not None:
-                try:
-                    #safely check if audio produced by VHS_LoadVideo actually exists
-                    a_waveform = audio['waveform']
-                except:
-                    pass
-            final_output_path = file_path
-            final_output_name = file
-            if a_waveform is not None:
-                # Create audio file if input was provided
-                output_file_with_audio = f"{filename}_{counter:05}-audio.{video_format['extension']}"
-                output_file_with_audio_path = os.path.join(full_output_folder, output_file_with_audio)
-                try:
-                    mux_metadata_path = None
-                    if video_format.get('save_metadata', 'False') != 'False':
-                        mux_metadata_path = create_ffmetadata_file(video_metadata, folder_paths.get_temp_directory())
-                    mux_args, channels = build_audio_mux_args(
-                        video_format,
-                        file_path,
-                        output_file_with_audio_path,
-                        audio,
-                        total_frames_output,
-                        frame_rate,
-                        metadata_path=mux_metadata_path,
-                    )
-                    audio_data = audio['waveform'].squeeze(0).transpose(0,1) \
-                            .numpy().tobytes()
+                images = map(lambda x: x.tobytes(), images)
+                env=os.environ.copy()
+                if  "environment" in video_format:
+                    env.update(video_format["environment"])
+
+                if "pre_pass" in video_format:
+                    images = [b''.join(images)]
+                    os.makedirs(folder_paths.get_temp_directory(), exist_ok=True)
+                    in_args_len = args.index("-i") + 2 # The index after ["-i", "-"]
+                    pre_pass_args = args[:in_args_len] + video_format['pre_pass']
+                    merge_filter_args(pre_pass_args)
                     try:
-                        res = subprocess.run(mux_args, input=audio_data,
-                                             env=env, capture_output=True, check=True)
+                        subprocess.run(pre_pass_args, input=images[0], env=env,
+                                       capture_output=True, check=True)
                     except subprocess.CalledProcessError as e:
-                        raise Exception(
-                            "An error occured while muxing audio into the video output:\n"
-                            + f"format={video_format['extension']} codec_args={video_format.get('audio_pass')} "
-                            + f"sample_rate={audio['sample_rate']} channels={channels}\n"
-                            + e.stderr.decode(*ENCODE_ARGS)
+                        raise Exception("An error occurred in the ffmpeg prepass:\n" \
+                                + e.stderr.decode(*ENCODE_ARGS))
+                if "inputs_main_pass" in video_format:
+                    in_args_len = args.index("-i") + 2 # The index after ["-i", "-"]
+                    args = args[:in_args_len] + video_format['inputs_main_pass'] + args[in_args_len:]
+
+                track_output_file(file_path)
+                if output_process is None:
+                    if 'gifski_pass' in video_format:
+                        format = 'image/gif'
+                        output_process = gifski_process(args, dimensions, frame_rate, video_format, file_path, env)
+                        audio = None
+                    else:
+                        args += video_format['main_pass'] + bitrate_arg
+                        merge_filter_args(args)
+                        output_process = ffmpeg_process(args, video_format, video_metadata, file_path, env)
+                    #Proceed to first yield
+                    output_process.send(None)
+                    if meta_batch is not None:
+                        meta_batch.outputs[unique_id] = (counter, output_process)
+
+                for image in images:
+                    pbar.update(1)
+                    output_process.send(image)
+                if meta_batch is not None:
+                    requeue_workflow((meta_batch.unique_id, not meta_batch.has_closed_inputs))
+                if meta_batch is None or meta_batch.has_closed_inputs:
+                    #Close pipe and wait for termination.
+                    try:
+                        total_frames_output = output_process.send(None)
+                        output_process.send(None)
+                    except StopIteration:
+                        pass
+                    if meta_batch is not None:
+                        meta_batch.outputs.pop(unique_id)
+                        if len(meta_batch.outputs) == 0:
+                            meta_batch.reset()
+                else:
+                    #batch is unfinished
+                    #TODO: Check if empty output breaks other custom nodes
+                    return {"ui": {"unfinished_batch": [True]}, "result": ((save_output, []),)}
+                a_waveform = None
+                if audio is not None:
+                    try:
+                        #safely check if audio produced by VHS_LoadVideo actually exists
+                        a_waveform = audio['waveform']
+                    except:
+                        pass
+                final_output_path = file_path
+                final_output_name = file
+                if a_waveform is not None:
+                    # Create audio file if input was provided
+                    output_file_with_audio = f"{filename}_{counter:05}-audio.{video_format['extension']}"
+                    output_file_with_audio_path = os.path.join(full_output_folder, output_file_with_audio)
+                    track_output_file(output_file_with_audio_path)
+                    try:
+                        mux_metadata_path = None
+                        if video_format.get('save_metadata', 'False') != 'False':
+                            mux_metadata_path = create_ffmetadata_file(video_metadata, folder_paths.get_temp_directory())
+                        mux_args, channels = build_audio_mux_args(
+                            video_format,
+                            file_path,
+                            output_file_with_audio_path,
+                            audio,
+                            total_frames_output,
+                            frame_rate,
+                            metadata_path=mux_metadata_path,
                         )
-                finally:
-                    if mux_metadata_path is not None and os.path.exists(mux_metadata_path):
-                        os.remove(mux_metadata_path)
-                if res.stderr:
-                    print(res.stderr.decode(*ENCODE_ARGS), end="", file=sys.stderr)
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-                debug_log("video_mux_complete", silent_path=file_path, muxed_path=output_file_with_audio_path)
-                final_output_path = output_file_with_audio_path
-                final_output_name = output_file_with_audio
-            output_files.append(final_output_path)
-            file = final_output_name
-        if extra_options.get('VHS_KeepIntermediate', True) == False:
-            for intermediate in output_files[1:-1]:
-                if os.path.exists(intermediate):
-                    os.remove(intermediate)
-        preview = {
+                        audio_data = audio['waveform'].squeeze(0).transpose(0,1) \
+                                .numpy().tobytes()
+                        try:
+                            res = subprocess.run(mux_args, input=audio_data,
+                                                 env=env, capture_output=True, check=True)
+                        except subprocess.CalledProcessError as e:
+                            raise Exception(
+                                "An error occured while muxing audio into the video output:\n"
+                                + f"format={video_format['extension']} codec_args={video_format.get('audio_pass')} "
+                                + f"sample_rate={audio['sample_rate']} channels={channels}\n"
+                                + e.stderr.decode(*ENCODE_ARGS)
+                            )
+                    finally:
+                        if mux_metadata_path is not None and os.path.exists(mux_metadata_path):
+                            os.remove(mux_metadata_path)
+                    if res.stderr:
+                        print(res.stderr.decode(*ENCODE_ARGS), end="", file=sys.stderr)
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                    debug_log("video_mux_complete", silent_path=file_path, muxed_path=output_file_with_audio_path)
+                    final_output_path = output_file_with_audio_path
+                    final_output_name = output_file_with_audio
+                output_files.append(final_output_path)
+                file = final_output_name
+            if extra_options.get('VHS_KeepIntermediate', True) == False:
+                for intermediate in output_files[1:-1]:
+                    if os.path.exists(intermediate):
+                        os.remove(intermediate)
+            preview = {
                 "filename": file,
                 "subfolder": subfolder,
                 "type": "output" if save_output else "temp",
@@ -720,12 +764,15 @@ class VideoCombine:
                 "frame_rate": frame_rate,
                 "fullpath": output_files[-1],
             }
-        if saved_workflow_image:
-            preview["workflow"] = first_image_file
-        if num_frames == 1 and 'png' in format and '%03d' in file:
-            preview['format'] = 'image/png'
-            preview['filename'] = file.replace('%03d', '001')
-        return {"ui": {"gifs": [preview]}, "result": ((save_output, output_files),)}
+            if saved_workflow_image:
+                preview["workflow"] = first_image_file
+            if num_frames == 1 and 'png' in format and '%03d' in file:
+                preview['format'] = 'image/png'
+                preview['filename'] = file.replace('%03d', '001')
+            return {"ui": {"gifs": [preview]}, "result": ((save_output, output_files),)}
+        except Exception:
+            _cleanup_partial_output_files(partial_output_files)
+            raise
 
 class LoadAudio:
     @classmethod

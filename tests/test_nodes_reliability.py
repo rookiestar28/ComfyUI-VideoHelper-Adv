@@ -258,6 +258,87 @@ class NodesReliabilityTests(unittest.TestCase):
         self.assertEqual(total_frames, 2)
         self.assertTrue(output_path.exists())
 
+    def test_video_combine_meta_batch_image_format_preflight_creates_no_utility_png(self):
+        combine = self.nodes_mod.VideoCombine()
+        images = [_FakeImageTensor(np.zeros((2, 2, 3), dtype=np.float32))]
+        meta_batch = types.SimpleNamespace(outputs={})
+
+        with self.assertRaisesRegex(Exception, "not compatible with batched output"):
+            combine.combine_video(
+                images=images,
+                frame_rate=8,
+                loop_count=0,
+                filename_prefix="Test",
+                format="image/gif",
+                save_output=True,
+                meta_batch=meta_batch,
+                unique_id="node",
+                extra_pnginfo={"workflow": {"extra": {"VHS_MetadataImage": True}}},
+            )
+
+        self.assertEqual(list(self.paths["output_dir"].iterdir()), [])
+
+    def test_video_combine_missing_ffmpeg_preflight_creates_no_utility_png(self):
+        combine = self.nodes_mod.VideoCombine()
+        images = [_FakeImageTensor(np.zeros((2, 2, 3), dtype=np.float32))]
+
+        with mock.patch.object(self.nodes_mod, "ffmpeg_path", None):
+            with self.assertRaisesRegex(ProcessLookupError, "ffmpeg is required"):
+                combine.combine_video(
+                    images=images,
+                    frame_rate=8,
+                    loop_count=0,
+                    filename_prefix="Test",
+                    format="video/fake-format",
+                    save_output=True,
+                    extra_pnginfo={"workflow": {"extra": {"VHS_MetadataImage": True}}},
+                )
+
+        self.assertEqual(list(self.paths["output_dir"].iterdir()), [])
+
+    def test_video_combine_cleans_partial_artifacts_after_encode_failure(self):
+        combine = self.nodes_mod.VideoCombine()
+        images = [_FakeImageTensor(np.zeros((2, 2, 3), dtype=np.float32))]
+
+        def failing_ffmpeg_process(_args, _video_format, _metadata, file_path, _env):
+            frame_data = yield
+            while frame_data is not None:
+                Path(file_path).write_bytes(b"partial-video")
+                frame_data = yield
+            raise Exception("encode failed")
+
+        with mock.patch.object(self.nodes_mod, "ffmpeg_path", "/usr/bin/ffmpeg"), \
+             mock.patch.object(
+                 self.nodes_mod,
+                 "apply_format_widgets",
+                 lambda _ext, _kwargs: {"extension": "mp4", "main_pass": []},
+             ), \
+             mock.patch.object(self.nodes_mod, "ffmpeg_process", failing_ffmpeg_process):
+            with self.assertRaisesRegex(Exception, "encode failed"):
+                combine.combine_video(
+                    images=images,
+                    frame_rate=8,
+                    loop_count=0,
+                    filename_prefix="Test",
+                    format="video/fake-format",
+                    save_output=True,
+                    extra_pnginfo={"workflow": {"extra": {"VHS_MetadataImage": True}}},
+                )
+
+        self.assertEqual(list(self.paths["output_dir"].iterdir()), [])
+
+    def test_output_cleanup_rejects_outside_roots(self):
+        outside_path = self.workspace.path / "outside.txt"
+        outside_path.write_bytes(b"keep")
+
+        with self.assertRaisesRegex(Exception, "invalid directory"):
+            self.nodes_mod._remove_output_file_if_exists(
+                str(outside_path),
+                output_dirs=[str(self.paths["output_dir"]), str(self.paths["temp_dir"])],
+            )
+
+        self.assertTrue(outside_path.exists())
+
     def test_prune_outputs_all_option_deletes_all_selected_outputs(self):
         prune = self.nodes_mod.PruneOutputs()
         files = []
