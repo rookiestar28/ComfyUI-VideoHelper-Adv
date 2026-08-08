@@ -194,5 +194,5 @@ jobs:
           DO_NOT_TRACK: "1"
           REGISTRY_ACCESS_TOKEN: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
         run: >-
-          comfy --skip-prompt --no-enable-telemetry env comfy node publish
+          comfy --skip-prompt --no-enable-telemetry node publish
           --token "$REGISTRY_ACCESS_TOKEN"

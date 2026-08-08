@@ -308,7 +308,11 @@ class PublishWorkflowPolicyTests(unittest.TestCase):
             for step in publish_steps
             if step["name"] == "Publish approved version to Comfy Registry"
         )
-        self.assertIn("comfy node publish", publish_command)
+        self.assertIn(
+            "comfy --skip-prompt --no-enable-telemetry node publish",
+            publish_command,
+        )
+        self.assertNotIn("env comfy", publish_command)
         self.assertNotIn("Comfy-Org/publish-node-action", self.raw)
 
 
