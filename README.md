@@ -5,12 +5,106 @@ Video workflow nodes for ComfyUI, based on
 
 This fork keeps the upstream VHS node surface compatible where practical, while
 focusing on safer output behavior, stricter format validation, more predictable
-preview/output metadata, and repo-appropriate automated tests.
+preview/output metadata, explicit filesystem trust boundaries, and
+repo-appropriate automated tests.
+
+<details><summary><h2>Latest Updates - Click to expand</h2></summary>
+
+<details>
+
+<summary><strong>Filesystem, URL, and metadata-query boundaries hardened</strong></summary>
+
+- Media reads, directory listings, previews, output writes, and artifact deletes
+  now pass through one canonical capability policy with safer host-root defaults.
+- Explicit deployment, external-read allowlist, legacy-local compatibility, and
+  HTTPS URL modes now fail closed when their configuration is contradictory or
+  unsafe for the active listen posture.
+- URL downloads reject credential-bearing, non-HTTPS, and private-address targets
+  before launch, then require bounded results to remain inside ComfyUI temp.
+- Video metadata queries now use a bounded, file-state-aware cache that
+  reauthorizes both hits and stores instead of retaining unbounded stale path data.
+
+</details>
+
+<details>
+
+<summary><strong>Frontend and core compatibility paths refreshed</strong></summary>
+
+- Removed deprecated frontend-internal imports and kept the extension on supported
+  ComfyUI entry points, including Desktop bridge-present and bridge-absent loading.
+- Split the largest backend encode/output flow and frontend extension core into
+  focused modules while preserving node IDs, imports, workflow behavior, and
+  extension registration ownership.
+- Format widgets now reconcile against backend-published schemas without deleting
+  linked inputs or depending on private frontend configuration mutation.
+- `Select Latest` remains a frontend-virtual workflow node with a safe backend
+  rejection; missing or denied paths clear stale target widgets.
+- Removed unreachable clipboard video-blob and nonexistent-node branches while
+  preserving the supported copied-output-path paste interaction.
+
+</details>
+
+<details>
+
+<summary><strong>Output execution and filter handling made more deterministic</strong></summary>
+
+- Lazy-loaded audio inputs are preserved through output execution, and audio mux
+  completion returns the final muxed artifact rather than a silent intermediate.
+- Metadata-enabled audio outputs retain round-trip workflow metadata, while
+  metadata-disabled outputs suppress prompt/workflow data in both video tags and
+  the utility PNG sidecar.
+- Repeated simple FFmpeg filters remain supported; unsupported mixed
+  `-filter_complex` plus `-vf`/`-af` configurations now fail clearly before launch.
+- Image-sequence results, partial-output cleanup, prune validation, filename
+  dimensions, and completed-output preview routing remain covered as concrete
+  output contracts.
+
+</details>
+
+<details>
+
+<summary><strong>Validation and independent release safeguards added</strong></summary>
+
+- Added repository-local Python, JavaScript syntax, Node helper, video-format, and
+  diff gates with native Windows and Linux entry points.
+- Added an owned, workspace-contained ComfyUI runtime matrix for output behavior,
+  plus focused path-policy and deferred-path matrices that start and stop only
+  their own loopback hosts.
+- Added least-privilege hosted validation for Ubuntu/Python 3.10 and 3.12 plus
+  Windows/Python 3.12, using Node.js 20 for frontend helper checks.
+- Added deterministic package inspection and a manually dispatched, confirmation-
+  and tag-gated Comfy Registry workflow. These safeguards do not publish anything
+  unless the explicit publish path is separately invoked with release credentials.
+
+</details>
+
+</details>
+
+## Table of Contents
+
+- [What This Fork Improves Over Upstream](#what-this-fork-improves-over-upstream)
+- [Installation](#installation)
+- [Main Nodes](#main-nodes)
+  - [Load Video](#load-video)
+  - [Load Image Sequence](#load-image-sequence)
+  - [Video Combine](#video-combine)
+  - [Prune Outputs](#prune-outputs)
+  - [Audio Nodes](#audio-nodes)
+  - [Batch, Info, and Utility Nodes](#batch-info-and-utility-nodes)
+- [Video Previews](#video-previews)
+  - [Advanced Previews](#advanced-previews)
+- [Filesystem and URL Security Policy](#filesystem-and-url-security-policy)
+- [Video Formats](#video-formats)
+- [Testing This Fork](#testing-this-fork)
+- [Compatibility Notes](#compatibility-notes)
+
+---
 
 ## What This Fork Improves Over Upstream
 
-The main changes in this fork are reliability and save-path hardening around
-`VHS_VideoCombine`:
+The fork began with reliability and save-path hardening around
+`VHS_VideoCombine` and now also owns explicit security, compatibility, and
+validation boundaries:
 
 | Area | Upstream behavior risk | This fork |
 |---|---|---|
@@ -22,7 +116,11 @@ The main changes in this fork are reliability and save-path hardening around
 | Prune safety | Prune behavior assumed at most three paths and could delete before discovering an invalid later path. | Prune classifies utility/intermediate/final artifacts, supports expanded sequences, deduplicates candidates, and validates all paths before deleting. |
 | Filename templates | `VideoCombine` did not pass dimensions into ComfyUI's save helper, so `%width%` and `%height%` resolved to `0`. | `filename_prefix` dimension tokens resolve from the first frame dimensions. |
 | Preview routing | Completed output preview routing has been aligned to avoid showing stale input-only previews for completed outputs. | Preview helper tests cover advanced routing states. |
-| Tests and validation | Upstream is primarily plugin/runtime driven. | This fork adds repo-local unit tests, format validation, JS helper tests, a pre-push sweep, and a runtime validation matrix. |
+| Lazy audio | Lazy audio objects could be treated as absent before their waveform was materialized. | Audio presence is preserved through lazy evaluation and verified on the final muxed output. |
+| Frontend compatibility | Deprecated or private frontend internals create breakage as ComfyUI and Desktop evolve. | Production modules use supported ComfyUI entry points, publish format-widget contracts from the backend, and retain stable workflow/node identities. |
+| Filesystem and URL access | Path reads, previews, URL downloads, writes, and deletes can drift into inconsistent trust rules. | One canonical capability policy defaults reads to ComfyUI host roots, keeps writes/deletes in output or temp, and disables URL loading by default for remote-restricted deployments. |
+| Metadata queries | An unbounded path-keyed metadata cache could retain stale or no-longer-authorized results. | Query metadata uses a bounded LRU with current authorization and file-state checks on every boundary. |
+| Tests and validation | Upstream is primarily plugin/runtime driven. | This fork adds local and hosted unit/static gates, format validation, Node helper tests, owned live-host matrices, and deterministic release-package inspection. |
 
 ## Installation
 
@@ -32,10 +130,11 @@ Install this fork into ComfyUI's `custom_nodes` directory:
 cd ComfyUI/custom_nodes
 git clone https://github.com/rookiestar28/ComfyUI-VideoHelper-Adv.git
 cd ComfyUI-VideoHelper-Adv
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-Restart ComfyUI after installation.
+Use the same Python interpreter or environment that starts ComfyUI. Restart
+ComfyUI after installation.
 
 Runtime requirements:
 
@@ -130,6 +229,10 @@ The fork keeps the upstream batch and utility nodes, including:
 - VAE Encode Batched / VAE Decode Batched
 - Split, merge, repeat, select, and count helpers for images, masks, and latents
 - Unbatch
+
+`Select Latest` is a frontend-virtual helper: ComfyUI applies its selected path
+to connected widgets before queue submission. Direct backend/API submission of
+that helper fails safely instead of executing as a path-reading node.
 
 ## Video Previews
 
@@ -230,6 +333,10 @@ Key fields:
 - `input_color_depth`: `8bit` or `16bit`.
 - `dim_alignment`: optional output dimension alignment requirement.
 
+Repeated simple `-vf` or `-af` filters are merged. A format that mixes
+`-filter_complex` with an additional simple filter is rejected explicitly;
+arbitrary filter-graph composition is not inferred automatically.
+
 Validate format files after editing:
 
 ```bash
@@ -239,22 +346,49 @@ python scripts/validate_video_formats.py
 ## Testing This Fork
 
 This repository is a ComfyUI custom node repo, not a standalone web app or npm
-package. It intentionally has no `package.json`, no Playwright harness, and no
-`.pre-commit-config.yaml`.
+package. It intentionally has no `package.json`, `npm test`, repo-managed
+Playwright dependency/browser installation, or `.pre-commit-config.yaml`.
 
-Preferred full local sweep:
+Install test tooling into a repository-local `.venv` from
+`requirements-test.txt`. The wrappers below require that local environment and
+Node.js 18 or newer.
+
+```powershell
+# Windows
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-test.txt
+```
+
+```bash
+# Linux / Git Bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-test.txt
+```
+
+Windows PowerShell:
+
+```powershell
+powershell -NoProfile -File scripts/run_repo_checks.ps1
+```
+
+Linux or Git Bash:
 
 ```bash
 bash scripts/run_pre_push_checks.sh
 ```
 
-That script runs:
+Both wrappers delegate to the same repository check runner and execute:
 
 - Python compile checks
 - Python unit tests through `scripts/run_unittests.py`
 - JavaScript syntax checks for `web/js/*.js`
 - Node built-in helper tests under `tests/js/`
+- all `video_formats/*.json` schema checks
 - `git diff --check`
+
+The same contract runs in `.github/workflows/validate.yml` on Ubuntu with
+Python 3.10/3.12 and Windows with Python 3.12. Hosted validation is
+publication-incapable.
 
 Additional useful checks:
 
@@ -264,21 +398,40 @@ python scripts/probe_video_format_outputs.py
 python -m unittest tests.test_runtime_validation_matrix
 ```
 
-Filesystem/URL policy changes also use the owned, contained live-host matrix:
+Live behavior uses owned, workspace-contained ComfyUI processes. Point these
+commands at a trusted ComfyUI checkout and the Python interpreter that can run
+that host; do not point them at an unreviewed reference checkout.
+
+Run all eight output scenarios:
+
+```bash
+python scripts/runtime/run_runtime_matrix.py \
+  --comfyui-root <TRUSTED_COMFYUI_ROOT> \
+  --comfyui-python <TRUSTED_COMFYUI_PYTHON> \
+  --all
+```
+
+Run the filesystem/URL policy matrix:
 
 ```bash
 python scripts/runtime/run_path_policy_matrix.py \
-  --comfyui-root <TRUSTED_NON_REFERENCE_COMFYUI_ROOT> \
+  --comfyui-root <TRUSTED_COMFYUI_ROOT> \
   --comfyui-python <TRUSTED_COMFYUI_PYTHON>
 ```
 
-The path-policy runner starts and stops only its own loopback hosts and writes
-content-free results under `.tmp/runtime_results/`.
+Run the focused virtual-node, cache, and FFmpeg-filter matrix:
 
-Runtime/UI validation still requires a real local ComfyUI instance with this
-plugin enabled. The repo records the required scenario coverage in
-`tests/runtime_validation_matrix.json`; those fixtures are not a standalone
-runtime runner.
+```bash
+python scripts/runtime/run_deferred_paths_matrix.py \
+  --comfyui-root <TRUSTED_COMFYUI_ROOT> \
+  --comfyui-python <TRUSTED_COMFYUI_PYTHON>
+```
+
+The runners copy the plugin into a disposable workspace-contained layout,
+listen only on an owned loopback port, stop only their own host, and write
+content-free result documents under `.tmp/runtime_results/`. The production UI
+probe is intentionally separate because this repository does not install or
+manage a browser dependency.
 
 ## Compatibility Notes
 
@@ -286,3 +439,6 @@ runtime runner.
 - Output behavior is stricter than upstream when it prevents silent corruption, metadata leakage, unsupported audio muxing, or unsafe deletion.
 - External custom `video_formats` should explicitly declare audio support with `supports_audio` and `audio_pass` when audio is intended.
 - Path authorization is enforced by a central, canonical capability policy. External read roots never grant output-write or delete access.
+- `legacy_local` is an explicit loopback-only compatibility mode; it is not the default and is rejected for remote-restricted deployments.
+- URL loading should remain disabled for LAN, reverse-proxy, public, or multi-user deployments unless downloader isolation and residual redirect/DNS risks are accepted separately.
+- This repository has independent versioning, validation, and release safeguards. It does not require an upstream pull request and does not imply that a Registry release has already occurred.
