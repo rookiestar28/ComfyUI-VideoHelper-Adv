@@ -330,7 +330,7 @@ def inspect_release_archive(archive_path: Path) -> ArchiveReport:
 RegistryReader = Callable[[str, bool], tuple[int, Any]]
 
 
-def _registry_reader(token: str) -> RegistryReader:
+def _registry_reader() -> RegistryReader:
     base_url = "https://api.comfy.org"
 
     class RejectRedirects(urllib.request.HTTPRedirectHandler):
@@ -341,9 +341,9 @@ def _registry_reader(token: str) -> RegistryReader:
     opener = urllib.request.build_opener(RejectRedirects())
 
     def read_json(path: str, token_required: bool) -> tuple[int, Any]:
-        headers = {"Accept": "application/json"}
         if token_required:
-            headers["Authorization"] = f"Bearer {token}"
+            raise ValueError("public Registry preflight cannot send credentials")
+        headers = {"Accept": "application/json"}
         request = urllib.request.Request(f"{base_url}{path}", headers=headers, method="GET")
         try:
             with opener.open(request, timeout=20) as response:
@@ -366,10 +366,11 @@ def preflight_registry(
     *,
     read_json: RegistryReader | None = None,
 ) -> dict[str, Any]:
-    """Perform authenticated GET-only ownership/collision checks.
+    """Perform credential-presence and public ownership/collision checks.
 
-    The returned payload is deliberately content-free: user identity, email, member,
-    and token details are never returned or logged.
+    Publisher-scoped Registry keys are publish credentials, not general user bearer
+    tokens. The returned payload is deliberately content-free, and the key is never
+    sent to read APIs or returned/logged. The publish endpoint remains the authority.
     """
 
     if _REGISTRY_ID.fullmatch(publisher_id) is None:
@@ -377,35 +378,16 @@ def preflight_registry(
     if _REGISTRY_ID.fullmatch(node_id) is None:
         raise ValueError("node ID is not a valid lowercase Registry identifier")
     if not token:
-        raise PermissionError("Registry token is required for authenticated preflight")
-    reader = read_json or _registry_reader(token)
-
-    publishers_status, publishers_payload = reader("/users/publishers/", True)
-    if publishers_status != 200:
-        raise PermissionError("authenticated publisher lookup failed")
-    if isinstance(publishers_payload, dict):
-        publishers = publishers_payload.get("publishers", [])
-    else:
-        publishers = publishers_payload
-    if not isinstance(publishers, list):
-        raise PermissionError("authenticated publisher response has an invalid schema")
-    owned_publishers = {
-        item.get("id") for item in publishers if isinstance(item, dict)
-    }
-    if publisher_id not in owned_publishers:
-        raise PermissionError("authenticated operator does not control the approved publisher")
+        raise PermissionError("Registry token is required for publish preflight")
+    # SECURITY: do not send a publisher-scoped publish key to user-identity APIs;
+    # the official publish endpoint validates the key's publisher authorization.
+    reader = read_json or _registry_reader()
 
     global_status, global_payload = reader(f"/nodes/{node_id}", False)
     if global_status == 200 and isinstance(global_payload, dict):
         publisher = global_payload.get("publisher") or {}
         if publisher.get("id") != publisher_id:
             raise PermissionError("global node ownership does not match approved publisher")
-        permission_status, permission_payload = reader(
-            f"/publishers/{publisher_id}/nodes/{node_id}/permissions",
-            True,
-        )
-        if permission_status != 200 or not isinstance(permission_payload, dict) or not permission_payload.get("canEdit"):
-            raise PermissionError("authenticated operator cannot edit the approved node")
         state = "owned"
     elif global_status == 404:
         state = "available"
@@ -413,7 +395,7 @@ def preflight_registry(
         raise PermissionError("approved node ID is already owned by another publisher")
 
     return {
-        "authenticated": True,
+        "credential_configured": True,
         "publisher_id": publisher_id,
         "node_id": node_id,
         "node_state": state,

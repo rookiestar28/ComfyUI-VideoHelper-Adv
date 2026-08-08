@@ -72,19 +72,43 @@ class RegistryPublishGuardTests(unittest.TestCase):
                 )
 
     def test_cli_detects_pending_multi_commit_fork_version_change(self):
-        previous_ref = subprocess.run(
-            ("git", "rev-parse", "origin/main"),
-            cwd=REPO_ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        with tempfile.TemporaryDirectory() as output_text:
-            output = Path(output_text) / "github-output.txt"
+        with tempfile.TemporaryDirectory() as repo_text:
+            repo = Path(repo_text)
+            subprocess.run(("git", "init", "-q", str(repo)), check=True)
+            subprocess.run(
+                ("git", "config", "user.name", "Registry Guard Test"),
+                cwd=repo,
+                check=True,
+            )
+            subprocess.run(
+                ("git", "config", "user.email", "registry-guard@example.invalid"),
+                cwd=repo,
+                check=True,
+            )
+            pyproject = repo / "pyproject.toml"
+            pyproject.write_text(_project("1.7.9"), encoding="utf-8")
+            subprocess.run(("git", "add", "pyproject.toml"), cwd=repo, check=True)
+            subprocess.run(("git", "commit", "-qm", "baseline"), cwd=repo, check=True)
+            previous_ref = subprocess.run(
+                ("git", "rev-parse", "HEAD"),
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+            (repo / "unrelated.txt").write_text("middle commit\n", encoding="utf-8")
+            subprocess.run(("git", "add", "unrelated.txt"), cwd=repo, check=True)
+            subprocess.run(("git", "commit", "-qm", "middle"), cwd=repo, check=True)
+            pyproject.write_text(_project("2.0.0"), encoding="utf-8")
+            subprocess.run(("git", "add", "pyproject.toml"), cwd=repo, check=True)
+            subprocess.run(("git", "commit", "-qm", "release"), cwd=repo, check=True)
+
+            output = repo / "github-output.txt"
             result = subprocess.run(
                 (
                     sys.executable,
-                    "scripts/registry_publish_guard.py",
+                    str(REPO_ROOT / "scripts" / "registry_publish_guard.py"),
                     "--pyproject",
                     "pyproject.toml",
                     "--previous-ref",
@@ -92,7 +116,7 @@ class RegistryPublishGuardTests(unittest.TestCase):
                     "--github-output",
                     str(output),
                 ),
-                cwd=REPO_ROOT,
+                cwd=repo,
                 check=False,
                 capture_output=True,
                 text=True,

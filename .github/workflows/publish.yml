@@ -16,6 +16,11 @@ on:
         required: true
         type: string
         default: "2.0.0"
+      commit:
+        description: For manual publish recovery, the exact 40-character main commit SHA
+        required: false
+        type: string
+        default: ""
       confirmation:
         description: For manual publish, enter PUBLISH comfyui-videohelper-adv 2.0.0
         required: false
@@ -85,6 +90,7 @@ jobs:
         shell: bash
         env:
           RELEASE_CONFIRMATION: ${{ inputs.confirmation }}
+          RELEASE_COMMIT: ${{ inputs.commit }}
           RELEASE_OPERATION: ${{ inputs.operation }}
           RELEASE_VERSION: ${{ inputs.version }}
         run: >-
@@ -93,15 +99,19 @@ jobs:
           --operation "$RELEASE_OPERATION"
           --confirmation "$RELEASE_CONFIRMATION"
           --github-ref "$GITHUB_REF"
+          --github-sha "$GITHUB_SHA"
+          --approved-commit "$RELEASE_COMMIT"
           --dry-run
           --archive "$RUNNER_TEMP/comfyui-videohelper-adv.zip"
 
-      - name: Require version tag for manual publish
+      - name: Require approved main commit for manual publish recovery
         if: github.event_name == 'workflow_dispatch' && inputs.operation == 'publish'
         shell: bash
         env:
-          EXPECTED_PUBLISH_REF: refs/tags/v${{ inputs.version }}
-        run: test "$GITHUB_REF" = "$EXPECTED_PUBLISH_REF"
+          APPROVED_COMMIT: ${{ inputs.commit }}
+        run: |
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_SHA" = "$APPROVED_COMMIT"
 
       - name: Inspect exact archive independently
         shell: bash
@@ -145,6 +155,7 @@ jobs:
         shell: bash
         env:
           RELEASE_CONFIRMATION: ${{ inputs.confirmation }}
+          RELEASE_COMMIT: ${{ inputs.commit }}
           RELEASE_VERSION: ${{ inputs.version }}
         run: >-
           python scripts/validate_release_metadata.py
@@ -152,6 +163,8 @@ jobs:
           --operation publish
           --confirmation "$RELEASE_CONFIRMATION"
           --github-ref "$GITHUB_REF"
+          --github-sha "$GITHUB_SHA"
+          --approved-commit "$RELEASE_COMMIT"
           --dry-run
           --archive "$RUNNER_TEMP/comfyui-videohelper-adv.zip"
 
@@ -161,7 +174,7 @@ jobs:
           python scripts/inspect_release_archive.py
           "$RUNNER_TEMP/comfyui-videohelper-adv.zip"
 
-      - name: Authenticated read-only Registry ownership preflight
+      - name: Registry collision and credential-presence preflight
         shell: bash
         env:
           REGISTRY_ACCESS_TOKEN: ${{ secrets.REGISTRY_ACCESS_TOKEN }}

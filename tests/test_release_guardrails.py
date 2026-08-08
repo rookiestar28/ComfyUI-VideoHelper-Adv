@@ -166,13 +166,11 @@ class ReleaseArchiveTests(unittest.TestCase):
 
 
 class RegistryPreflightTests(unittest.TestCase):
-    def test_authenticated_owner_and_globally_missing_node_is_available(self):
+    def test_configured_credential_and_globally_missing_node_is_available(self):
         calls = []
 
         def fake_read(path, token_required):
             calls.append((path, token_required))
-            if path == "/users/publishers/":
-                return 200, [{"id": APPROVED_PUBLISHER_ID, "members": [{"user": {"email": "private"}}]}]
             if path == f"/nodes/{APPROVED_NODE_ID}":
                 return 404, None
             raise AssertionError(path)
@@ -184,23 +182,18 @@ class RegistryPreflightTests(unittest.TestCase):
             read_json=fake_read,
         )
 
-        self.assertEqual(result, {"authenticated": True, "publisher_id": APPROVED_PUBLISHER_ID, "node_id": APPROVED_NODE_ID, "node_state": "available"})
+        self.assertEqual(result, {"credential_configured": True, "publisher_id": APPROVED_PUBLISHER_ID, "node_id": APPROVED_NODE_ID, "node_state": "available"})
         self.assertEqual(
             calls,
             [
-                ("/users/publishers/", True),
                 (f"/nodes/{APPROVED_NODE_ID}", False),
             ],
         )
 
-    def test_owned_node_requires_authenticated_edit_permission(self):
+    def test_existing_node_requires_matching_public_publisher(self):
         def fake_read(path, token_required):
-            if path == "/users/publishers/":
-                return 200, [{"id": APPROVED_PUBLISHER_ID}]
             if path == f"/nodes/{APPROVED_NODE_ID}":
                 return 200, {"id": APPROVED_NODE_ID, "publisher": {"id": APPROVED_PUBLISHER_ID}}
-            if path == f"/publishers/{APPROVED_PUBLISHER_ID}/nodes/{APPROVED_NODE_ID}/permissions":
-                return 200, {"canEdit": True}
             raise AssertionError(path)
 
         result = preflight_registry(
@@ -225,8 +218,6 @@ class RegistryPreflightTests(unittest.TestCase):
 
     def test_foreign_node_collision_fails_closed(self):
         def fake_read(path, token_required):
-            if path == "/users/publishers/":
-                return 200, [{"id": APPROVED_PUBLISHER_ID}]
             if path == f"/nodes/{APPROVED_NODE_ID}":
                 return 200, {"id": APPROVED_NODE_ID, "publisher": {"id": "someone-else"}}
             raise AssertionError(path)
@@ -284,7 +275,9 @@ class PublishWorkflowPolicyTests(unittest.TestCase):
         self.assertEqual(lowered.count("secrets.registry_access_token"), 2)
         self.assertNotIn("comfy_registry_release_token", lowered)
         self.assertNotIn("release_environment_protected", lowered)
-        self.assertIn("refs/tags/v", lowered)
+        self.assertIn("refs/heads/main", lowered)
+        self.assertIn("approved-commit", lowered)
+        self.assertIn("github_sha", lowered)
         self.assertIn("publish ", lowered)
         self.assertIn("github.event.before", lowered)
         self.assertIn("comfy-cli==1.12.0", lowered)
@@ -307,7 +300,7 @@ class PublishWorkflowPolicyTests(unittest.TestCase):
             validate_names.index("Validate automatic push metadata and exact archive"),
         )
         self.assertLess(
-            publish_names.index("Authenticated read-only Registry ownership preflight"),
+            publish_names.index("Registry collision and credential-presence preflight"),
             publish_names.index("Publish approved version to Comfy Registry"),
         )
         publish_command = next(
@@ -320,6 +313,52 @@ class PublishWorkflowPolicyTests(unittest.TestCase):
 
 
 class ReleaseCliTests(unittest.TestCase):
+    def test_manual_publish_recovery_is_bound_to_exact_main_commit(self):
+        current_commit = subprocess.run(
+            ("git", "rev-parse", "HEAD"),
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        command = (
+            sys.executable,
+            "scripts/validate_release_metadata.py",
+            "--expected-version",
+            APPROVED_VERSION,
+            "--operation",
+            "publish",
+            "--confirmation",
+            f"PUBLISH {APPROVED_NODE_ID} {APPROVED_VERSION}",
+            "--github-ref",
+            "refs/heads/main",
+            "--github-sha",
+            current_commit,
+            "--approved-commit",
+            current_commit,
+            "--dry-run",
+        )
+        accepted = subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+
+        mismatched_command = list(command)
+        mismatched_command[-2] = "0" * 40
+        mismatched = subprocess.run(
+            mismatched_command,
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(mismatched.returncode, 2)
+        self.assertIn("ERROR:", mismatched.stderr)
+
     def test_expected_policy_failures_are_concise_without_tracebacks(self):
         wrong_ref = subprocess.run(
             (

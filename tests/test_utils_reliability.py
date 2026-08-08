@@ -63,7 +63,7 @@ class UtilsReliabilityTests(unittest.TestCase):
 
         result = self.utils.try_download_video(url, resolver=lambda _host: ["8.8.8.8"])
 
-        self.assertEqual(result, str(cached_file))
+        self.assertTrue(os.path.samefile(result, cached_file))
 
     def test_try_download_video_invalidates_missing_cached_file_and_redownloads(self):
         stale_file = self.paths["temp_dir"] / "stale.mp4"
@@ -82,11 +82,13 @@ class UtilsReliabilityTests(unittest.TestCase):
 
         result = self.utils.try_download_video(url, resolver=lambda _host: ["8.8.8.8"])
 
-        self.assertEqual(result, str(fresh_file))
+        self.assertTrue(os.path.samefile(result, fresh_file))
         self.assertEqual(len(calls), 1)
-        self.assertEqual(
-            self.utils.download_history[self.utils.download_cache_key(url)],
-            str(fresh_file.resolve()),
+        self.assertTrue(
+            os.path.samefile(
+                self.utils.download_history[self.utils.download_cache_key(url)],
+                fresh_file,
+            )
         )
 
     def test_try_download_video_rejects_missing_fresh_download_path(self):
@@ -184,7 +186,7 @@ class UtilsReliabilityTests(unittest.TestCase):
         original_realpath = os.path.realpath
 
         def simulate_link_resolution(candidate):
-            if os.path.abspath(candidate) == os.path.abspath(apparent_frame):
+            if os.path.samefile(candidate, apparent_frame):
                 return str(outside_frame.resolve())
             return original_realpath(candidate)
 
