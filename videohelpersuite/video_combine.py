@@ -21,7 +21,8 @@ from .media_encode import (
     gifski_process, tensor_to_bytes, tensor_to_shorts, to_pingpong,
 )
 from .output_artifacts import (
-    _build_output_metadata, _cleanup_partial_output_files,
+    _authorize_output_file, _build_output_metadata, _cleanup_partial_output_files,
+    _delete_output_files,
     _get_workflow_extra_options, _sequence_output_paths,
     _split_output_files, _video_format_saves_metadata,
 )
@@ -161,12 +162,15 @@ class VideoCombine:
             first_image.shape[1],
             first_image.shape[0],
         )
+        full_output_folder = _authorize_output_file(full_output_folder).canonical
         output_files = []
         partial_output_files = []
 
         def track_output_file(path):
-            if path not in partial_output_files:
-                partial_output_files.append(path)
+            canonical = _authorize_output_file(path).canonical
+            if canonical not in partial_output_files:
+                partial_output_files.append(canonical)
+            return canonical
 
         extra_options = _get_workflow_extra_options(extra_pnginfo)
 
@@ -235,7 +239,7 @@ class VideoCombine:
         saved_workflow_image = False
         try:
             if extra_options.get('VHS_MetadataImage', True) != False:
-                track_output_file(file_path)
+                file_path = track_output_file(file_path)
                 Image.fromarray(tensor_to_bytes(first_image)).save(
                     file_path,
                     pnginfo=metadata,
@@ -256,7 +260,7 @@ class VideoCombine:
                     image_kwargs['lossless'] = kwargs.get("lossless", True)
                 file = f"{filename}_{counter:05}.{format_ext}"
                 file_path = os.path.join(full_output_folder, file)
-                track_output_file(file_path)
+                file_path = track_output_file(file_path)
                 if pingpong:
                     images = to_pingpong(images)
                 def frames_gen(images):
@@ -360,7 +364,7 @@ class VideoCombine:
                     in_args_len = args.index("-i") + 2 # The index after ["-i", "-"]
                     args = args[:in_args_len] + video_format['inputs_main_pass'] + args[in_args_len:]
 
-                track_output_file(file_path)
+                file_path = track_output_file(file_path)
                 if output_process is None:
                     if 'gifski_pass' in video_format:
                         format = 'image/gif'
@@ -401,11 +405,13 @@ class VideoCombine:
                     # Create audio file if input was provided
                     output_file_with_audio = f"{filename}_{counter:05}-audio.{video_format['extension']}"
                     output_file_with_audio_path = os.path.join(full_output_folder, output_file_with_audio)
-                    track_output_file(output_file_with_audio_path)
+                    output_file_with_audio_path = track_output_file(output_file_with_audio_path)
                     try:
                         mux_metadata_path = None
                         if video_format.get('save_metadata', 'False') != 'False':
                             mux_metadata_path = create_ffmetadata_file(video_metadata, folder_paths.get_temp_directory())
+                            if mux_metadata_path is not None:
+                                mux_metadata_path = _authorize_output_file(mux_metadata_path).canonical
                         mux_args, channels = build_audio_mux_args(
                             video_format,
                             file_path,
@@ -429,25 +435,30 @@ class VideoCombine:
                             )
                     finally:
                         if mux_metadata_path is not None and os.path.exists(mux_metadata_path):
-                            os.remove(mux_metadata_path)
+                            _delete_output_files([mux_metadata_path])
                     if res.stderr:
                         print(res.stderr.decode(*ENCODE_ARGS), end="", file=sys.stderr)
                     if os.path.exists(file_path):
-                        os.remove(file_path)
-                    debug_log("video_mux_complete", silent_path=file_path, muxed_path=output_file_with_audio_path)
+                        _delete_output_files([file_path])
+                    debug_log(
+                        "video_mux_complete",
+                        silent_name=os.path.basename(file_path),
+                        muxed_name=os.path.basename(output_file_with_audio_path),
+                    )
                     final_output_path = output_file_with_audio_path
                     final_output_name = output_file_with_audio
                 sequence_output_paths = _sequence_output_paths(final_output_path, total_frames_output)
                 if sequence_output_paths is not None:
-                    output_files.extend(sequence_output_paths)
+                    output_files.extend(
+                        _authorize_output_file(path).canonical
+                        for path in sequence_output_paths
+                    )
                 else:
                     output_files.append(final_output_path)
                 file = final_output_name
             if extra_options.get('VHS_KeepIntermediate', True) == False:
                 _, intermediate_files, _ = _split_output_files(output_files)
-                for intermediate in intermediate_files:
-                    if os.path.exists(intermediate):
-                        os.remove(intermediate)
+                _delete_output_files(intermediate_files)
             preview = {
                 "filename": file,
                 "subfolder": subfolder,

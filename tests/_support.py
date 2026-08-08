@@ -94,7 +94,16 @@ def install_base_stubs(temp_root):
         "temp": str(temp_dir),
         "path": str(output_dir),
     }.get(typ)
-    folder_paths_module.annotated_filepath = _annotated_filepath
+    def annotated_filepath(raw):
+        filename, annotation = _annotated_filepath(raw)
+        base_dir = {
+            "input": str(input_dir),
+            "output": str(output_dir),
+            "temp": str(temp_dir),
+        }.get(annotation)
+        return filename, base_dir
+
+    folder_paths_module.annotated_filepath = annotated_filepath
     folder_paths_module.get_annotated_filepath = lambda path: str(input_dir / path)
     folder_paths_module.exists_annotated_filepath = lambda path: (input_dir / path).exists()
     def get_save_image_path(prefix, output_dir, image_width=0, image_height=0):
@@ -121,6 +130,8 @@ def install_base_stubs(temp_root):
 
     comfy_module = types.ModuleType("comfy")
     comfy_utils_module = types.ModuleType("comfy.utils")
+    comfy_cli_args_module = types.ModuleType("comfy.cli_args")
+    comfy_cli_args_module.args = types.SimpleNamespace(listen="127.0.0.1")
     comfy_utils_module.common_upscale = lambda tensor, *_a, **_k: tensor
 
     class ProgressBar:
@@ -136,6 +147,7 @@ def install_base_stubs(temp_root):
     comfy_utils_module.ProgressBar = ProgressBar
     sys.modules["comfy"] = comfy_module
     sys.modules["comfy.utils"] = comfy_utils_module
+    sys.modules["comfy.cli_args"] = comfy_cli_args_module
 
     comfy_kdiff_module = types.ModuleType("comfy.k_diffusion")
     comfy_kdiff_utils_module = types.ModuleType("comfy.k_diffusion.utils")

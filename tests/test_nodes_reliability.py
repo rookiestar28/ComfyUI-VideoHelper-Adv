@@ -137,6 +137,7 @@ class NodesReliabilityTests(unittest.TestCase):
             "videohelpersuite.media_encode",
             "videohelpersuite.video_combine",
             "videohelpersuite.utils",
+            "videohelpersuite.path_policy",
             "videohelpersuite.logger",
             "videohelpersuite.image_latent_nodes",
             "videohelpersuite.load_video_nodes",
@@ -156,6 +157,12 @@ class NodesReliabilityTests(unittest.TestCase):
         self.nodes_mod = import_fresh("videohelpersuite.nodes")
         self.encode_mod = importlib.import_module("videohelpersuite.media_encode")
         self.combine_mod = importlib.import_module("videohelpersuite.video_combine")
+        purge_modules(
+            "videohelpersuite.load_images_nodes",
+            "videohelpersuite.load_video_nodes",
+        )
+        self.load_images_mod = import_fresh("videohelpersuite.load_images_nodes")
+        self.load_video_mod = import_fresh("videohelpersuite.load_video_nodes")
 
     def tearDown(self):
         self.workspace.cleanup()
@@ -666,13 +673,64 @@ class NodesReliabilityTests(unittest.TestCase):
         outside_path = self.workspace.path / "outside.txt"
         outside_path.write_bytes(b"keep")
 
-        with self.assertRaisesRegex(Exception, "invalid directory"):
+        with self.assertRaisesRegex(Exception, "invalid directory") as captured:
             self.nodes_mod._remove_output_file_if_exists(
                 str(outside_path),
                 output_dirs=[str(self.paths["output_dir"]), str(self.paths["temp_dir"])],
             )
 
         self.assertTrue(outside_path.exists())
+        self.assertNotIn(str(outside_path), str(captured.exception))
+
+    def test_video_combine_rejects_host_save_path_outside_roots_before_write(self):
+        outside_dir = self.workspace.path / "outside"
+        outside_dir.mkdir()
+        images = [_FakeImageTensor(np.zeros((2, 2, 3), dtype=np.float32))]
+
+        with mock.patch.object(
+            self.combine_mod.folder_paths,
+            "get_save_image_path",
+            return_value=(str(outside_dir), "Escape", 1, "", "Escape"),
+        ):
+            with self.assertRaisesRegex(Exception, "invalid directory"):
+                self.combine_mod.VideoCombine().combine_video(
+                    images=images,
+                    frame_rate=8,
+                    loop_count=0,
+                    filename_prefix="Escape",
+                    format="image/gif",
+                    save_output=True,
+                )
+
+        self.assertEqual(list(outside_dir.iterdir()), [])
+
+    def test_load_images_validation_denies_outside_without_path_disclosure(self):
+        outside_dir = self.workspace.path / "outside-images"
+        outside_dir.mkdir()
+        (outside_dir / "private.png").write_bytes(b"synthetic")
+
+        result = self.load_images_mod.validate_load_images(str(outside_dir))
+
+        self.assertIsInstance(result, str)
+        self.assertNotIn(str(outside_dir), result)
+
+    def test_low_level_load_video_denies_outside_before_generator_launch(self):
+        outside_file = self.workspace.path / "outside.mp4"
+        outside_file.write_bytes(b"synthetic")
+        launched = []
+
+        def forbidden_generator(**_kwargs):
+            launched.append(True)
+            raise AssertionError("generator must not launch")
+
+        with self.assertRaises(Exception) as captured:
+            self.load_video_mod.load_video(
+                video=str(outside_file),
+                generator=forbidden_generator,
+            )
+
+        self.assertEqual(launched, [])
+        self.assertNotIn(str(outside_file), str(captured.exception))
 
     def test_video_combine_expands_image_sequence_outputs_to_frame_paths(self):
         combine = self.nodes_mod.VideoCombine()

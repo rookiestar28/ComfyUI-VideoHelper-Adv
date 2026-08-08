@@ -15,8 +15,9 @@ except ImportError:
 
 from .logger import logger
 from .utils import is_url, get_sorted_dir_files_from_directory, ffmpeg_path, \
-        validate_sequence, is_safe_path, strip_path, try_download_video, ENCODE_ARGS, \
-        debug_log
+        validate_sequence, strip_path, try_download_video, ENCODE_ARGS, \
+        debug_log, get_path_policy
+from .path_policy import PathAccessDenied, PathCapability
 from comfy.k_diffusion.utils import FolderOfImages
 
 
@@ -56,8 +57,25 @@ def decode_process_output(payload):
 
 def cleanup_temp_paths(paths):
     for path in paths or ():
+        try:
+            # CRITICAL: cleanup is a delete capability, not a best-effort path operation.
+            authorized = get_path_policy().authorize_path(
+                path,
+                PathCapability.DELETE_ARTIFACT,
+            )
+            authorized = get_path_policy().reauthorize_path(authorized)
+        except PathAccessDenied as exc:
+            debug_log(
+                "temp_cleanup_denied",
+                capability=exc.capability.value,
+                reason=exc.reason,
+            )
+            continue
+        if authorized.root_id != "temp":
+            debug_log("temp_cleanup_denied", reason="non_temp_root")
+            continue
         with suppress(FileNotFoundError, OSError):
-            os.remove(path)
+            os.remove(authorized.canonical)
 
 
 async def cleanup_preview_process(proc, *, kill=False, label="preview"):
@@ -105,7 +123,7 @@ async def stream_preview_response(request, *, args, filename, content_type, debu
     disconnected = False
 
     try:
-        debug_log(debug_event, filename=filename, args=args)
+        debug_log(debug_event, filename=filename, argument_count=len(args))
         proc = await asyncio.create_subprocess_exec(
             *args,
             stdout=subprocess.PIPE,
@@ -149,10 +167,8 @@ async def view_video(request):
     cleanup_paths = []
 
     if ffmpeg_path is None:
-        #Don't just return file, that provides  arbitrary read access to any file
-        if is_safe_path(output_dir, strict=True):
-            return web.FileResponse(path=file)
-        return error_response(503, "ffmpeg is unavailable and the requested preview path is not allowed for direct file serving.")
+        # resolve_path already granted PREVIEW_MEDIA for the canonical target.
+        return web.FileResponse(path=file)
 
     frame_rate = parse_float(query, 'frame_rate', 8.0, 0.0)
     if query.get('format', 'video') == "folder":
@@ -166,6 +182,18 @@ async def view_video(request):
             delete=False,
         ) as handle:
             concat_file = handle.name
+        try:
+            concat_authorized = get_path_policy().authorize_path(
+                concat_file,
+                PathCapability.WRITE_OUTPUT,
+            )
+        except PathAccessDenied:
+            cleanup_temp_paths([concat_file])
+            return error_response(403, "Preview workspace is not authorized.")
+        if concat_authorized.root_id != "temp":
+            cleanup_temp_paths([concat_file])
+            return error_response(403, "Preview workspace is not authorized.")
+        concat_file = concat_authorized.canonical
         skip_first_images = parse_int(query, 'skip_first_images', 0, 0)
         select_every_nth = parse_int(query, 'select_every_nth', 1, 1)
         valid_images = get_sorted_dir_files_from_directory(file, skip_first_images, select_every_nth, FolderOfImages.IMG_EXTENSIONS)
@@ -196,8 +224,12 @@ async def view_video(request):
         '-',
     )
     if returncode not in (0, None):
-        message = decode_process_output(res_stderr)
-        debug_log("view_video_prepass_failed", filename=filename, returncode=returncode, stderr=message)
+        debug_log(
+            "view_video_prepass_failed",
+            filename=filename,
+            returncode=returncode,
+            stderr_bytes=len(res_stderr or b""),
+        )
         cleanup_temp_paths(cleanup_paths)
         return error_response(500, f"Failed to inspect media for preview: {filename}")
 
@@ -272,10 +304,8 @@ async def view_audio(request):
         return path_res
     file, filename, output_dir = path_res
     if ffmpeg_path is None:
-        #Don't just return file, that provides  arbitrary read access to any file
-        if is_safe_path(output_dir, strict=True):
-            return web.FileResponse(path=file)
-        return error_response(503, "ffmpeg is unavailable and the requested audio preview path is not allowed for direct file serving.")
+        # resolve_path already granted PREVIEW_MEDIA for the canonical target.
+        return web.FileResponse(path=file)
 
     in_args = ["-i", file]
     start_time = 0
@@ -337,7 +367,11 @@ async def query_video(request):
                 source['frames'] = stream.metadata.get('NUMBER_OF_FRAMES', round(source['duration'] * source['fps']))
                 query_cache[filepath] = (os.stat(filepath).st_mtime, source)
         except Exception as exc:
-            debug_log("query_video_failed", filepath=filepath, error=str(exc))
+            debug_log(
+                "query_video_failed",
+                filename=os.path.basename(filepath),
+                error_type=type(exc).__name__,
+            )
     if not 'frames' in source:
         return web.json_response({"error": "Failed to read video metadata."}, status=422)
     loaded = {}
@@ -348,7 +382,7 @@ async def query_video(request):
     loaded['duration'] = max(0.0, loaded['duration'] - parse_int(query, 'skip_first_frames', 0, 0) / loaded['fps'])
     loaded['fps'] /= parse_int(query, 'select_every_nth', 1, 1)
     loaded['frames'] = max(0, round(loaded['duration'] * loaded['fps']))
-    debug_log("query_video", filepath=filepath, source=source, loaded=loaded)
+    debug_log("query_video", filename=os.path.basename(filepath), source=source, loaded=loaded)
     return web.json_response({'source': source, 'loaded': loaded})
 
 async def resolve_path(query):
@@ -363,45 +397,76 @@ async def resolve_path(query):
         try:
             file = await asyncio.to_thread(try_download_video, filename)
         except Exception as exc:
-            debug_log("resolve_path_url_failed", source=filename, error=str(exc))
-            return error_response(502, f"Failed to download media from URL: {filename}")
+            debug_log("resolve_path_url_failed", error_type=type(exc).__name__)
+            return error_response(502, "Failed to download media from URL.")
         if not file:
-            return error_response(502, f"Failed to download media from URL: {filename}")
-        output_dir, _ = os.path.split(file)
-        debug_log("resolve_path_url", source=filename, resolved=file)
-        return file, filename, output_dir
+            return error_response(502, "Failed to download media from URL.")
+        try:
+            authorized = get_path_policy().authorize_path(
+                file,
+                PathCapability.PREVIEW_MEDIA,
+            )
+        except PathAccessDenied as exc:
+            debug_log(
+                "resolve_path_url_denied",
+                capability=exc.capability.value,
+                reason=exc.reason,
+            )
+            return error_response(403, "Downloaded media path is not authorized.")
+        if authorized.root_id != "temp":
+            return error_response(403, "Downloaded media path is not authorized.")
+        file = authorized.canonical
+        output_dir, safe_filename = os.path.split(file)
+        debug_log("resolve_path_url", root_id=authorized.root_id)
+        return file, safe_filename, output_dir
     else:
         filename, output_dir = folder_paths.annotated_filepath(filename)
 
-        type = query.get("type", "output")
-        if type == "path":
+        media_type = query.get("type", "output")
+        if media_type == "path":
             #special case for path_based nodes
             #NOTE: output_dir may be empty, but non-None
             output_dir, filename = os.path.split(strip_path(filename))
         if output_dir is None:
-            output_dir = folder_paths.get_directory_by_type(type)
+            output_dir = folder_paths.get_directory_by_type(media_type)
 
         if output_dir is None:
-            return error_response(404, f"Unknown media directory type: {type}")
-
-        if not is_safe_path(output_dir):
-            return error_response(403, f"Unsafe media directory: {output_dir}")
+            return error_response(404, f"Unknown media directory type: {media_type}")
 
         if "subfolder" in query:
             output_dir = os.path.join(output_dir, query["subfolder"])
 
-        filename = os.path.basename(filename)
+        normalized_filename = filename.strip()
+        filename = os.path.basename(normalized_filename)
+        if media_type != "path" and filename != normalized_filename:
+            return error_response(403, "Requested media path is not authorized.")
         file = os.path.join(output_dir, filename)
 
+        try:
+            # CRITICAL: authorize only after every user-controlled path component is joined.
+            authorized = get_path_policy().authorize_path(
+                file,
+                PathCapability.PREVIEW_MEDIA,
+            )
+        except PathAccessDenied as exc:
+            debug_log(
+                "resolve_path_local_denied",
+                capability=exc.capability.value,
+                reason=exc.reason,
+            )
+            return error_response(403, "Requested media path is not authorized.")
+        file = authorized.canonical
+        output_dir = os.path.dirname(file)
+
         if not os.path.exists(file):
-            return error_response(404, f"Media file not found: {file}")
+            return error_response(404, "Media file not found.")
         if query.get('format', 'video') == 'folder':
             if not os.path.isdir(file):
-                return error_response(422, f"Expected a directory for folder preview: {file}")
+                return error_response(422, "Expected a directory for folder preview.")
         else:
             if not os.path.isfile(file) and not validate_sequence(file):
-                    return error_response(422, f"Media path is not a file or valid sequence: {file}")
-        debug_log("resolve_path_local", filename=filename, output_dir=output_dir, resolved=file, type=type)
+                    return error_response(422, "Media path is not a file or valid sequence.")
+        debug_log("resolve_path_local", filename=filename, root_id=authorized.root_id, type=media_type)
         return file, filename, output_dir
 
 @server.PromptServer.instance.routes.get("/vhs/getpath")
@@ -411,9 +476,22 @@ async def get_path(request):
     if "path" not in query:
         return web.Response(status=204)
     #NOTE: path always ends in `/`, so this is functionally an lstrip
-    path = os.path.abspath(strip_path(query["path"]))
+    requested_path = strip_path(query["path"])
+    try:
+        authorized_directory = get_path_policy().authorize_path(
+            requested_path,
+            PathCapability.LIST_DIRECTORY,
+        )
+    except PathAccessDenied as exc:
+        debug_log(
+            "get_path_denied",
+            capability=exc.capability.value,
+            reason=exc.reason,
+        )
+        return error_response(403, "Requested directory is not authorized.")
+    path = authorized_directory.canonical
 
-    if not os.path.exists(path) or not is_safe_path(path):
+    if not os.path.isdir(path):
         return web.json_response([])
 
     #Use get so None is default instead of keyerror
@@ -427,13 +505,24 @@ async def get_path(request):
     valid_items = []
     for item in os.scandir(path):
         try:
-            if item.is_dir():
-                valid_items.append(item.name + "/")
+            item_authorized = get_path_policy().authorize_path(
+                item.path,
+                PathCapability.LIST_DIRECTORY,
+            )
+            item_authorized = get_path_policy().reauthorize_path(item_authorized)
+            if os.path.isdir(item_authorized.canonical):
+                valid_items.append((os.stat(item_authorized.canonical).st_mtime, item.name + "/"))
                 continue
             if valid_extensions is None or item.name.split(".")[-1].lower() in valid_extensions:
-                valid_items.append(item.name)
-        except OSError:
+                item_authorized = get_path_policy().authorize_path(
+                    item.path,
+                    PathCapability.READ_MEDIA,
+                )
+                item_authorized = get_path_policy().reauthorize_path(item_authorized)
+                if os.path.isfile(item_authorized.canonical):
+                    valid_items.append((os.stat(item_authorized.canonical).st_mtime, item.name))
+        except (OSError, PathAccessDenied):
             #Broken symlinks can throw a very unhelpful "Invalid argument"
             pass
-    valid_items.sort(key=lambda f: os.stat(os.path.join(path,f)).st_mtime)
-    return web.json_response(valid_items)
+    valid_items.sort(key=lambda item: item[0])
+    return web.json_response([item[1] for item in valid_items])

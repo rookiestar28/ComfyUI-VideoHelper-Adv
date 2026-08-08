@@ -7,7 +7,10 @@ import sys
 import folder_paths
 import numpy as np
 
-from .output_artifacts import _finalize_ffmpeg_process, _raise_ffmpeg_failure
+from .output_artifacts import (
+    _authorize_output_file, _delete_output_files,
+    _finalize_ffmpeg_process, _raise_ffmpeg_failure,
+)
 from .logger import logger
 from .utils import ENCODE_ARGS, ffmpeg_path, gifski_path, merge_filter_args
 from .video_metadata import create_ffmetadata_file
@@ -72,7 +75,7 @@ def build_audio_mux_args(video_format, file_path, output_file_with_audio_path, a
     return mux_args, channels
 
 def ffmpeg_process(args, video_format, video_metadata, file_path, env):
-
+    file_path = _authorize_output_file(file_path).canonical
     res = b""
     frame_data = yield
     total_frames_output = 0
@@ -82,6 +85,8 @@ def ffmpeg_process(args, video_format, video_metadata, file_path, env):
         # IMPORTANT: keep this comment payload contract aligned with web/js/videoMetadataParser.js.
         # Saved-video workflow re-import depends on the final muxed file retaining this metadata.
         metadata_path = create_ffmetadata_file(video_metadata, folder_paths.get_temp_directory())
+        if metadata_path is not None:
+            metadata_path = _authorize_output_file(metadata_path).canonical
     if metadata_path is not None:
         m_args = args[:1] + ["-i", metadata_path] + args[1:] + [
             "-map_metadata", "0",
@@ -118,7 +123,7 @@ def ffmpeg_process(args, video_format, video_metadata, file_path, env):
                     res = err
         finally:
             if os.path.exists(metadata_path):
-                os.remove(metadata_path)
+                _delete_output_files([metadata_path])
     if needs_main_pass:
         total_frames_output = 0
         with subprocess.Popen(args + [file_path], stderr=subprocess.PIPE,
@@ -140,6 +145,7 @@ def ffmpeg_process(args, video_format, video_metadata, file_path, env):
         print(res.decode(*ENCODE_ARGS), end="", file=sys.stderr)
 
 def gifski_process(args, dimensions, frame_rate, video_format, file_path, env):
+    file_path = _authorize_output_file(file_path).canonical
     frame_data = yield
     with subprocess.Popen(args + video_format['main_pass'] + ['-f', 'yuv4mpegpipe', '-'],
                           stderr=subprocess.PIPE, stdin=subprocess.PIPE,

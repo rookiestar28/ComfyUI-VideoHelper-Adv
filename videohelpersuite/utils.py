@@ -16,6 +16,13 @@ import server
 from .logger import logger
 import folder_paths
 
+from .path_policy import (
+    PathAccessDenied,
+    PathCapability,
+    URLAccessDenied,
+    build_runtime_path_policy,
+)
+
 BIGMIN = -(2**53-1)
 BIGMAX = (2**53-1)
 
@@ -110,14 +117,22 @@ ytdl_path = os.environ.get("VHS_YTDL", None) or shutil.which('yt-dlp') \
         or shutil.which('youtube-dl')
 ffprobe_path = shutil.which("ffprobe")
 
+# SECURITY: one immutable server-owned policy must authorize every filesystem and URL boundary.
+PATH_POLICY = build_runtime_path_policy()
+if PATH_POLICY.legacy_alias:
+    logger.warning(
+        "VHS_STRICT_PATHS is deprecated and now maps to host_roots; "
+        "migrate to VHS_PATH_POLICY."
+    )
+
 def get_capability_summary():
     return {
         "debug": VHS_DEBUG,
-        "ffmpeg": ffmpeg_path,
-        "ffprobe": ffprobe_path,
-        "gifski": gifski_path,
-        "strict_paths": env_flag("VHS_STRICT_PATHS", False),
-        "ytdl": ytdl_path,
+        "ffmpeg": ffmpeg_path is not None,
+        "ffprobe": ffprobe_path is not None,
+        "gifski": gifski_path is not None,
+        "ytdl": ytdl_path is not None,
+        **PATH_POLICY.capability_summary(),
     }
 
 def debug_log(event: str, **payload):
@@ -132,52 +147,115 @@ def debug_log(event: str, **payload):
 debug_log("capabilities", **get_capability_summary())
 
 download_history = {}
-def try_download_video(url):
+
+
+def get_path_policy():
+    return PATH_POLICY
+
+
+def authorize_path(path, capability=PathCapability.READ_MEDIA):
+    return PATH_POLICY.authorize_path(path, capability)
+
+
+def download_cache_key(url):
+    return hashlib.sha256(url.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def try_download_video(url, *, resolver=None):
+    authorized_url = PATH_POLICY.authorize_url_network(url, resolver=resolver)
     if ytdl_path is None:
         return None
-    cached_file = download_history.get(url)
+    cache_key = download_cache_key(authorized_url.normalized)
+    cached_file = download_history.get(cache_key)
     # IMPORTANT: temp downloads can disappear between runs; never reuse a missing cached path.
     if cached_file is not None:
-        if os.path.isfile(cached_file):
-            return cached_file
-        download_history.pop(url, None)
+        try:
+            authorized_cache = PATH_POLICY.authorize_path(
+                cached_file,
+                PathCapability.READ_MEDIA,
+            )
+        except PathAccessDenied:
+            download_history.pop(cache_key, None)
+            raise Exception("Downloaded media cache is not a contained temp file.") from None
+        if authorized_cache.root_id != "temp":
+            download_history.pop(cache_key, None)
+            raise Exception("Downloaded media cache is not a contained temp file.")
+        if os.path.isfile(authorized_cache.canonical):
+            return authorized_cache.canonical
+        download_history.pop(cache_key, None)
     os.makedirs(folder_paths.get_temp_directory(), exist_ok=True)
     #Format information could be added to only download audio for Load Audio,
     #but this gets hairy if same url is also used for video.
     #Best to just always keep defaults
     #dl_format = ['-f', 'ba'] if is_audio else []
     try:
-        res = subprocess.run([ytdl_path, "--print", "after_move:filepath",
-                              "-P", folder_paths.get_temp_directory(), url],
-                             capture_output=True, check=True)
+        res = subprocess.run([
+            ytdl_path,
+            "--max-filesize", "2147483648",
+            "--print", "after_move:filepath",
+            "-P", folder_paths.get_temp_directory(),
+            authorized_url.normalized,
+        ], capture_output=True, check=True, timeout=300)
         #strip newline
         file = res.stdout.decode(*ENCODE_ARGS).strip()
-    except subprocess.CalledProcessError as e:
-        raise Exception("An error occurred in the yt-dl process:\n" \
-                + e.stderr.decode(*ENCODE_ARGS))
-    if not file or not os.path.isfile(file):
-        download_history.pop(url, None)
+    except subprocess.TimeoutExpired:
+        raise Exception("Media download exceeded the allowed time limit.") from None
+    except subprocess.CalledProcessError:
+        raise Exception("Media download failed.") from None
+    if not file:
+        download_history.pop(cache_key, None)
         raise Exception("yt-dl did not produce a reusable downloaded file path.")
-    download_history[url] = file
-    return file
+    try:
+        authorized_file = PATH_POLICY.authorize_path(
+            file,
+            PathCapability.READ_MEDIA,
+        )
+    except PathAccessDenied:
+        raise Exception("Downloader result is not a contained temp file.") from None
+    if authorized_file.root_id != "temp":
+        raise Exception("Downloader result is not a contained temp file.")
+    if not os.path.isfile(authorized_file.canonical):
+        download_history.pop(cache_key, None)
+        raise Exception("yt-dl did not produce a reusable downloaded file path.")
+    if os.path.getsize(authorized_file.canonical) > 2147483648:
+        delete_target = PATH_POLICY.authorize_path(
+            authorized_file.canonical,
+            PathCapability.DELETE_ARTIFACT,
+        )
+        delete_target = PATH_POLICY.reauthorize_path(delete_target)
+        if delete_target.root_id == "temp":
+            os.remove(delete_target.canonical)
+        raise Exception("Downloaded media exceeded the allowed size limit.")
+    download_history[cache_key] = authorized_file.canonical
+    return authorized_file.canonical
 
 def is_safe_path(path, strict=False):
-    if "VHS_STRICT_PATHS" not in os.environ and not strict:
-        return True
-    basedir = os.path.abspath('.')
     try:
-        common_path = os.path.commonpath([basedir, path])
-    except:
-        #Different drive on windows
+        PATH_POLICY.authorize_path(path, PathCapability.READ_MEDIA)
+    except PathAccessDenied:
         return False
-    return common_path == basedir
+    return True
 
 def get_sorted_dir_files_from_directory(directory: str, skip_first_images: int=0, select_every_nth: int=1, extensions: Iterable=None):
-    directory = strip_path(directory)
+    directory = PATH_POLICY.authorize_path(
+        strip_path(directory),
+        PathCapability.LIST_DIRECTORY,
+    ).canonical
     dir_files = os.listdir(directory)
     dir_files = sorted(dir_files)
     dir_files = [os.path.join(directory, x) for x in dir_files]
-    dir_files = list(filter(lambda filepath: os.path.isfile(filepath), dir_files))
+    authorized_files = []
+    for filepath in dir_files:
+        try:
+            authorized = PATH_POLICY.authorize_path(
+                filepath,
+                PathCapability.READ_MEDIA,
+            )
+        except PathAccessDenied:
+            continue
+        if os.path.isfile(authorized.canonical):
+            authorized_files.append(authorized.canonical)
+    dir_files = authorized_files
     # filter by extension, if needed
     if extensions is not None:
         extensions = list(extensions)
@@ -197,6 +275,10 @@ def get_sorted_dir_files_from_directory(directory: str, skip_first_images: int=0
 def calculate_file_hash(filename: str, hash_every_n: int = 1):
     #Larger video files were taking >.5 seconds to hash even when cached,
     #so instead the modified time from the filesystem is used as a hash
+    filename = PATH_POLICY.authorize_path(
+        filename,
+        PathCapability.READ_MEDIA,
+    ).canonical
     h = hashlib.sha256()
     h.update(filename.encode())
     h.update(str(os.path.getmtime(filename)).encode())
@@ -260,6 +342,10 @@ def requeue_workflow(requeue_required=(-1,True)):
         requeue_workflow_unchecked()
 
 def get_audio(file, start_time=0, duration=0):
+    file = PATH_POLICY.authorize_path(
+        file,
+        PathCapability.READ_MEDIA,
+    ).canonical
     args = [ffmpeg_path, "-i", file]
     if start_time > 0:
         args += ["-ss", str(start_time)]
@@ -312,6 +398,13 @@ def is_url(url):
 def validate_sequence(path):
     #Check if path is a valid ffmpeg sequence that points to at least one file
     (path, file) = os.path.split(path)
+    try:
+        path = PATH_POLICY.authorize_path(
+            path,
+            PathCapability.LIST_DIRECTORY,
+        ).canonical
+    except PathAccessDenied:
+        return False
     if not os.path.isdir(path):
         return False
     match = re.search('%0?\\d+d', file)
@@ -323,10 +416,21 @@ def validate_sequence(path):
     else:
         seq = '\\\\d{%s}' % seq[1:-1]
     file_matcher = re.compile(re.sub('%0?\\d+d', seq, file))
+    matched_file = False
     for file in os.listdir(path):
         if file_matcher.fullmatch(file):
-            return True
-    return False
+            try:
+                candidate = PATH_POLICY.authorize_path(
+                    os.path.join(path, file),
+                    PathCapability.READ_MEDIA,
+                )
+                candidate = PATH_POLICY.reauthorize_path(candidate)
+            except PathAccessDenied:
+                return False
+            if not os.path.isfile(candidate.canonical):
+                return False
+            matched_file = True
+    return matched_file
 
 def strip_path(path):
     #This leaves whitespace inside quotes and only a single "
@@ -344,23 +448,39 @@ def hash_path(path):
         return "input"
     if is_url(path):
         return "url"
+    try:
+        path = PATH_POLICY.authorize_path(
+            strip_path(path),
+            PathCapability.READ_MEDIA,
+        ).canonical
+    except PathAccessDenied:
+        return "DENIED"
     if not os.path.isfile(path):
         return "DNE"
-    return calculate_file_hash(strip_path(path))
+    return calculate_file_hash(path)
 
 
 def validate_path(path, allow_none=False, allow_url=True):
     if path is None:
         return allow_none
     if is_url(path):
-        # IMPORTANT: strict local path rules apply only to filesystem paths, not supported URL inputs.
-        #Probably not feasible to check if url resolves here
         if not allow_url:
             return "URLs are unsupported for this path"
+        try:
+            PATH_POLICY.validate_url(path)
+        except URLAccessDenied as exc:
+            return str(exc)
         return True
-    if not os.path.isfile(strip_path(path)):
-        return "Invalid file path: {}".format(path)
-    return is_safe_path(path)
+    try:
+        authorized = PATH_POLICY.authorize_path(
+            strip_path(path),
+            PathCapability.READ_MEDIA,
+        )
+    except PathAccessDenied as exc:
+        return str(exc)
+    if not os.path.isfile(authorized.canonical):
+        return "Media file does not exist."
+    return True
 
 
 def validate_index(index: int, length: int=0, is_range: bool=False, allow_negative=False, allow_missing=False) -> int:

@@ -42,6 +42,7 @@ from .output_artifacts import (
     _raise_ffmpeg_failure, _raise_missing_ffmpeg_output,
     _finalize_ffmpeg_process, _path_is_inside_directory,
     _remove_output_file_if_exists, _cleanup_partial_output_files,
+    _delete_output_files,
     _get_workflow_extra_options, _video_format_saves_metadata,
     _build_output_metadata,
 )
@@ -73,11 +74,11 @@ class LoadAudio:
     def load_audio(self, audio_file, seek_seconds=0, duration=0):
         audio_file = strip_path(audio_file)
         if audio_file is None or validate_path(audio_file) != True:
-            raise Exception("audio_file is not a valid path: " + audio_file)
+            raise Exception("Audio source is not authorized or does not exist.")
         if is_url(audio_file):
             downloaded = try_download_video(audio_file)
             if downloaded is None:
-                raise Exception("audio_file URL could not be downloaded: " + audio_file)
+                raise Exception("Audio URL could not be downloaded.")
             audio_file = downloaded
         #Eagerly fetch the audio since the user must be using it if the
         #node executes, unlike Load Video
@@ -120,7 +121,7 @@ class LoadAudioUpload:
     def load_audio(self, start_time=0, duration=0, **kwargs):
         audio_file = folder_paths.get_annotated_filepath(strip_path(kwargs['audio']))
         if audio_file is None or validate_path(audio_file) != True:
-            raise Exception("audio_file is not a valid path: " + audio_file)
+            raise Exception("Audio source is not authorized or does not exist.")
 
         audio = get_audio(audio_file, start_time, duration)
         loaded_duration = audio['waveform'].size(2)/audio['sample_rate']
@@ -228,15 +229,7 @@ class PruneOutputs:
             delete_list += final_files
         delete_list = list(dict.fromkeys(delete_list))
 
-        output_dirs = [folder_paths.get_output_directory(),
-                       folder_paths.get_temp_directory()]
-        for file in delete_list:
-            #Check that path is actually an output directory
-            if not any(_path_is_inside_directory(file, directory) for directory in output_dirs):
-                        raise Exception("Tried to prune output from invalid directory: " + file)
-        for file in delete_list:
-            if os.path.exists(file):
-                os.remove(file)
+        _delete_output_files(delete_list)
         return ()
 
 class BatchManager:

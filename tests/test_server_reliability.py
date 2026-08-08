@@ -9,13 +9,28 @@ from tests._support import TempWorkspace, install_base_stubs, import_fresh, purg
 
 class ServerReliabilityTests(unittest.TestCase):
     def setUp(self):
+        self.policy_environment = {
+            name: os.environ.pop(name, None)
+            for name in (
+                "VHS_DEPLOYMENT_PROFILE",
+                "VHS_PATH_POLICY",
+                "VHS_EXTERNAL_READ_ROOTS",
+                "VHS_URL_POLICY",
+                "VHS_STRICT_PATHS",
+            )
+        }
         self.workspace = TempWorkspace()
-        purge_modules("videohelpersuite.server", "videohelpersuite.utils", "videohelpersuite.logger", "server", "folder_paths", "comfy", "torch")
+        purge_modules("videohelpersuite.server", "videohelpersuite.utils", "videohelpersuite.path_policy", "videohelpersuite.logger", "server", "folder_paths", "comfy", "torch")
         self.paths = install_base_stubs(self.workspace.path)
         self.server_mod = import_fresh("videohelpersuite.server")
 
     def tearDown(self):
         self.workspace.cleanup()
+        for name, value in self.policy_environment.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
     def _run(self, coro):
         return asyncio.run(coro)
@@ -27,9 +42,12 @@ class ServerReliabilityTests(unittest.TestCase):
 
     def test_resolve_path_handles_url_download_errors(self):
         self.server_mod.try_download_video = lambda _url: (_ for _ in ()).throw(RuntimeError("boom"))
-        response = self._run(self.server_mod.resolve_path({"filename": "https://example.com/video.mp4"}))
+        sensitive_url = "https://example.com/video.mp4?private=value"
+        response = self._run(self.server_mod.resolve_path({"filename": sensitive_url}))
         self.assertEqual(response.status, 502)
         self.assertIn("Failed to download media from URL", response.text)
+        self.assertNotIn(sensitive_url, response.text)
+        self.assertNotIn("private=value", response.text)
 
     def test_resolve_path_rejects_missing_local_file(self):
         response = self._run(
@@ -37,6 +55,49 @@ class ServerReliabilityTests(unittest.TestCase):
         )
         self.assertEqual(response.status, 404)
         self.assertIn("Media file not found", response.text)
+
+    def test_resolve_path_rejects_post_join_subfolder_escape_without_path_leak(self):
+        outside_dir = self.workspace.path / "outside"
+        outside_dir.mkdir()
+        outside_file = outside_dir / "clip.mp4"
+        outside_file.write_bytes(b"synthetic")
+
+        response = self._run(self.server_mod.resolve_path({
+            "filename": "clip.mp4",
+            "type": "output",
+            "subfolder": "../outside",
+        }))
+
+        self.assertEqual(response.status, 403)
+        self.assertNotIn(str(outside_dir), response.text)
+        self.assertNotIn(str(outside_file), response.text)
+
+    def test_resolve_path_rejects_annotated_path_escape(self):
+        outside_dir = self.workspace.path / "outside-annotated"
+        outside_dir.mkdir()
+        outside_file = outside_dir / "clip.mp4"
+        outside_file.write_bytes(b"synthetic")
+
+        response = self._run(self.server_mod.resolve_path({
+            "filename": "../outside-annotated/clip.mp4 [output]",
+            "type": "input",
+        }))
+
+        self.assertEqual(response.status, 403)
+        self.assertNotIn(str(outside_file), response.text)
+
+    def test_resolve_path_returns_canonical_authorized_output(self):
+        media = self.paths["output_dir"] / "clip.mp4"
+        media.write_bytes(b"synthetic")
+
+        result = self._run(self.server_mod.resolve_path({
+            "filename": "clip.mp4",
+            "type": "output",
+        }))
+
+        self.assertEqual(Path(result[0]), media.resolve())
+        self.assertEqual(result[1], "clip.mp4")
+        self.assertEqual(Path(result[2]), self.paths["output_dir"].resolve())
 
     def test_get_path_respects_comma_separated_extensions(self):
         sample_dir = self.paths["output_dir"] / "browse"
@@ -54,6 +115,28 @@ class ServerReliabilityTests(unittest.TestCase):
         response = self._run(self.server_mod.get_path(request))
         self.assertEqual(response.status, 200)
         self.assertEqual(response.data, ["clip.mp4", "audio.wav"])
+
+    def test_get_path_rejects_outside_directory_without_disclosing_it(self):
+        outside = self.workspace.path / "outside"
+        outside.mkdir()
+        (outside / "private.mp4").write_bytes(b"synthetic")
+        request = types.SimpleNamespace(rel_url=types.SimpleNamespace(query={
+            "path": str(outside),
+            "extensions": "mp4",
+        }))
+
+        response = self._run(self.server_mod.get_path(request))
+
+        self.assertEqual(response.status, 403)
+        self.assertNotIn(str(outside), response.text)
+
+    def test_cleanup_temp_paths_never_deletes_outside_temp_root(self):
+        outside = self.workspace.path / "outside.txt"
+        outside.write_text("synthetic", encoding="utf-8")
+
+        self.server_mod.cleanup_temp_paths([str(outside)])
+
+        self.assertTrue(outside.exists())
 
     def test_cleanup_preview_process_closes_transport_after_kill(self):
         class DummyTransport:
@@ -159,7 +242,7 @@ class ServerReliabilityTests(unittest.TestCase):
         self.assertTrue(os.path.exists(second_path))
 
     def test_stream_preview_response_removes_cleanup_paths(self):
-        temp_file = Path(self.workspace.path) / "temp-preview.txt"
+        temp_file = self.paths["temp_dir"] / "temp-preview.txt"
         temp_file.write_text("preview", encoding="utf-8")
 
         class DummyStdout:

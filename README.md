@@ -154,12 +154,47 @@ Benefits:
 - Load Video previews can reflect node settings such as skipped frames and load caps.
 - Remote browser bandwidth can be reduced.
 - Browser performance can improve for large or normally unsupported media.
-- `VHS_STRICT_PATHS` can limit previews to ComfyUI subdirectories.
+- The backend path policy applies the same authorization to previews as to node loads.
 
 Tradeoffs:
 
 - Preview generation can add delay for long inputs.
 - Generated previews are lower quality than the original media; use Open preview for the source artifact.
+
+## Filesystem and URL Security Policy
+
+The default filesystem mode is `host_roots`. Media reads, directory listings,
+and previews are limited to ComfyUI's input, output, and temp roots. Writes and
+deletes are always limited to output and temp, including when an external read
+root is configured.
+
+Server environment options:
+
+- `VHS_PATH_POLICY=host_roots|allowlist|legacy_local` selects the filesystem
+  mode. `legacy_local` restores arbitrary local reads for compatibility and is
+  accepted only for a loopback-only `trusted_local` deployment.
+- `VHS_EXTERNAL_READ_ROOTS` is an OS-path-separator-delimited list of existing
+  directories. It is required by `allowlist`, rejected in other modes, and
+  grants read/list/preview capabilities only.
+- `VHS_DEPLOYMENT_PROFILE=trusted_local|remote_restricted` may make the derived
+  deployment profile more restrictive. A non-loopback or unknown listen
+  address cannot be overridden to `trusted_local`.
+- `VHS_URL_POLICY=disabled|https` controls URL-backed media loading. Its default
+  is `https` for loopback-only trusted-local operation and `disabled` for a
+  remote-restricted deployment.
+
+`VHS_STRICT_PATHS` is a temporary deprecated alias. During its compatibility
+window, any value maps to `host_roots`; it cannot enable `legacy_local`, and it
+must not be combined with `VHS_PATH_POLICY`. The alias is scheduled for removal
+in the next breaking release after the first public release containing this
+policy.
+
+HTTPS URL loading rejects credentials, fragments, non-HTTPS schemes, and
+non-public resolved IP addresses before launching the downloader. Downloads
+are time/size bounded and their results must resolve inside ComfyUI temp.
+Redirect and DNS-rebinding behavior in the external downloader remains a
+residual network risk; keep URL loading disabled for LAN, proxy, public, or
+multi-user deployments unless that risk is separately isolated and accepted.
 
 ## Video Formats
 
@@ -229,6 +264,17 @@ python scripts/probe_video_format_outputs.py
 python -m unittest tests.test_runtime_validation_matrix
 ```
 
+Filesystem/URL policy changes also use the owned, contained live-host matrix:
+
+```bash
+python scripts/runtime/run_path_policy_matrix.py \
+  --comfyui-root <TRUSTED_NON_REFERENCE_COMFYUI_ROOT> \
+  --comfyui-python <TRUSTED_COMFYUI_PYTHON>
+```
+
+The path-policy runner starts and stops only its own loopback hosts and writes
+content-free results under `.tmp/runtime_results/`.
+
 Runtime/UI validation still requires a real local ComfyUI instance with this
 plugin enabled. The repo records the required scenario coverage in
 `tests/runtime_validation_matrix.json`; those fixtures are not a standalone
@@ -239,4 +285,4 @@ runtime runner.
 - The node names and common workflow shape are kept close to upstream VHS for workflow compatibility.
 - Output behavior is stricter than upstream when it prevents silent corruption, metadata leakage, unsupported audio muxing, or unsafe deletion.
 - External custom `video_formats` should explicitly declare audio support with `supports_audio` and `audio_pass` when audio is intended.
-- Path containment remains delegated to ComfyUI's `folder_paths` helper; this fork does not allow arbitrary output writes outside ComfyUI output/temp roots.
+- Path authorization is enforced by a central, canonical capability policy. External read roots never grant output-write or delete access.

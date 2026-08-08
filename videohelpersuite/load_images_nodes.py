@@ -9,12 +9,23 @@ import folder_paths
 from comfy.k_diffusion.utils import FolderOfImages
 from comfy.utils import common_upscale, ProgressBar
 from .logger import logger
-from .utils import BIGMAX, calculate_file_hash, get_sorted_dir_files_from_directory, validate_path, strip_path, is_safe_path
+from .path_policy import PathAccessDenied, PathCapability
+from .utils import (
+    BIGMAX, authorize_path, calculate_file_hash,
+    get_sorted_dir_files_from_directory, strip_path,
+)
 
 
 def is_changed_load_images(directory: str, image_load_cap: int = 0, skip_first_images: int = 0, select_every_nth: int = 1, **kwargs):
+    try:
+        directory = authorize_path(
+            strip_path(directory),
+            PathCapability.LIST_DIRECTORY,
+        ).canonical
+    except PathAccessDenied:
+        return False
     if not os.path.isdir(directory):
-            return False
+        return False
         
     dir_files = get_sorted_dir_files_from_directory(directory, skip_first_images, select_every_nth, FolderOfImages.IMG_EXTENSIONS)
     if image_load_cap != 0:
@@ -30,29 +41,45 @@ def validate_load_images(directory: str):
     directory = strip_path(directory)
     if not directory:
         return "Directory path is empty."
-    if not is_safe_path(directory):
-        return f"Directory '{directory}' is outside the allowed path scope."
+    try:
+        directory = authorize_path(
+            directory,
+            PathCapability.LIST_DIRECTORY,
+        ).canonical
+    except PathAccessDenied:
+        return "Directory is outside the allowed path scope."
     if not os.path.isdir(directory):
-            return f"Directory '{directory}' cannot be found."
+        return "Directory cannot be found."
     dir_files = os.listdir(directory)
     if len(dir_files) == 0:
-        return f"No files in directory '{directory}'."
+        return "No files in directory."
 
     return True
 
 def images_generator(directory: str, image_load_cap: int = 0, skip_first_images: int = 0, select_every_nth: int = 1, meta_batch=None, unique_id=None):
     directory = strip_path(directory)
+    try:
+        directory = authorize_path(
+            directory,
+            PathCapability.LIST_DIRECTORY,
+        ).canonical
+    except PathAccessDenied:
+        raise PermissionError("Directory is not authorized.") from None
     if not os.path.isdir(directory):
-        raise FileNotFoundError(f"Directory '{directory}' cannot be found.")
+        raise FileNotFoundError("Directory cannot be found.")
     dir_files = get_sorted_dir_files_from_directory(directory, skip_first_images, select_every_nth, FolderOfImages.IMG_EXTENSIONS)
 
     if len(dir_files) == 0:
-        raise FileNotFoundError(f"No files in directory '{directory}'.")
+        raise FileNotFoundError("No files in directory.")
     if image_load_cap > 0:
         dir_files = dir_files[:image_load_cap]
     sizes = {}
     has_alpha = False
     for image_path in dir_files:
+        image_path = authorize_path(
+            image_path,
+            PathCapability.READ_MEDIA,
+        ).canonical
         i = Image.open(image_path)
         #exif_transpose can only ever rotate, but rotating can swap width/height
         i = ImageOps.exif_transpose(i)
@@ -66,6 +93,10 @@ def images_generator(directory: str, image_load_cap: int = 0, skip_first_images:
 
     iformat = "RGBA" if has_alpha else "RGB"
     def load_image(file_path):
+        file_path = authorize_path(
+            file_path,
+            PathCapability.READ_MEDIA,
+        ).canonical
         i = Image.open(file_path)
         i = ImageOps.exif_transpose(i)
         i = i.convert(iformat)
@@ -121,7 +152,7 @@ def load_images(directory: str, image_load_cap: int = 0, skip_first_images: int 
     else:
         masks = torch.zeros((images.size(0), 64, 64), dtype=torch.float32, device="cpu")
     if len(images) == 0:
-        raise FileNotFoundError(f"No images could be loaded from directory '{directory}'.")
+        raise FileNotFoundError("No images could be loaded from directory.")
     return images, masks, images.size(0)
 
 class LoadImagesFromDirectoryUpload:

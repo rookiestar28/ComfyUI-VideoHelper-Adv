@@ -18,6 +18,7 @@ class LoadVideoNodesReliabilityTests(unittest.TestCase):
         purge_modules(
             "videohelpersuite.load_video_nodes",
             "videohelpersuite.utils",
+            "videohelpersuite.path_policy",
             "videohelpersuite.logger",
             "server",
             "folder_paths",
@@ -28,7 +29,7 @@ class LoadVideoNodesReliabilityTests(unittest.TestCase):
             "cv2",
             "psutil",
         )
-        install_base_stubs(self.workspace.path)
+        self.paths = install_base_stubs(self.workspace.path)
         install_load_video_dependency_stubs()
         self.load_video_nodes = import_fresh("videohelpersuite.load_video_nodes")
 
@@ -56,6 +57,8 @@ class LoadVideoNodesReliabilityTests(unittest.TestCase):
         self.assertIs(result[3], video_info)
 
     def test_ffmpeg_frame_generator_assembles_frames_correctly_across_partial_reads(self):
+        media_path = self.paths["input_dir"] / "clip.mp4"
+        media_path.write_bytes(b"synthetic")
         frame = np.array([[[1, 2, 3, 4], [5, 6, 7, 8]]], dtype=np.uint16)
         frame_bytes = frame.astype(frame.dtype.newbyteorder("<")).tobytes()
         chunks = [frame_bytes[:5], frame_bytes[5:11], frame_bytes[11:]]
@@ -95,7 +98,7 @@ class LoadVideoNodesReliabilityTests(unittest.TestCase):
             return_value=DummyPopen(chunks),
         ):
             generator = self.load_video_nodes.ffmpeg_frame_generator(
-                video="clip.mp4",
+                video=str(media_path),
                 force_rate=0,
                 frame_load_cap=1,
                 start_time=0,

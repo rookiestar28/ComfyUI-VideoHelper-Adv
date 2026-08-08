@@ -20,7 +20,9 @@ from comfy.k_diffusion.utils import FolderOfImages
 from .logger import logger
 from .utils import BIGMAX, DIMMAX, calculate_file_hash, get_sorted_dir_files_from_directory,\
         lazy_get_audio, hash_path, validate_path, strip_path, try_download_video,  \
-        is_url, imageOrLatent, ffmpeg_path, ENCODE_ARGS, floatOrInt, debug_log
+        is_url, imageOrLatent, ffmpeg_path, ENCODE_ARGS, floatOrInt, debug_log, \
+        authorize_path
+from .path_policy import PathCapability
 
 
 video_extensions = ['webm', 'mp4', 'mkv', 'gif', 'mov']
@@ -80,7 +82,7 @@ def target_size(width, height, custom_width, custom_height, downscale_ratio=8) -
 
 
 def raise_video_error(video, reason):
-    raise RuntimeError(f"Failed to load video '{video}': {reason}")
+    raise RuntimeError(f"Failed to load video: {reason}")
 
 
 def estimate_frame_memory(width, height, channels, multiplier=2.0):
@@ -88,6 +90,7 @@ def estimate_frame_memory(width, height, channels, multiplier=2.0):
 
 def cv_frame_generator(video, force_rate, frame_load_cap, skip_first_frames,
                        select_every_nth, meta_batch=None, unique_id=None):
+    video = authorize_path(video, PathCapability.READ_MEDIA).canonical
     video_cap = cv2.VideoCapture(video)
     if not video_cap.isOpened() or not video_cap.grab():
         video_cap.release()
@@ -190,6 +193,7 @@ def cv_frame_generator(video, force_rate, frame_load_cap, skip_first_frames,
 def ffmpeg_frame_generator(video, force_rate, frame_load_cap, start_time,
                            custom_width, custom_height, downscale_ratio=8,
                            meta_batch=None, unique_id=None):
+    video = authorize_path(video, PathCapability.READ_MEDIA).canonical
     if ffmpeg_path is None:
         raise_video_error(video, "ffmpeg is unavailable.")
     args_input = ["-i", video]
@@ -341,7 +345,10 @@ def load_video(meta_batch=None, unique_id=None, memory_limit_mb=None, vae=None,
         kwargs.pop('force_size')
         logger.warn("force_size has been removed. Did you reload the webpage after updating?")
     format = get_format(format)
-    kwargs['video'] = strip_path(kwargs['video'])
+    kwargs['video'] = authorize_path(
+        strip_path(kwargs['video']),
+        PathCapability.READ_MEDIA,
+    ).canonical
     if vae is not None:
         downscale_ratio = getattr(vae, "downscale_ratio", 8)
     else:
@@ -349,7 +356,7 @@ def load_video(meta_batch=None, unique_id=None, memory_limit_mb=None, vae=None,
     if meta_batch is None or unique_id not in meta_batch.inputs:
         gen = generator(meta_batch=meta_batch, unique_id=unique_id, downscale_ratio=downscale_ratio, **kwargs)
         (width, height, fps, duration, total_frames, target_frame_time, yieldable_frames, new_width, new_height, alpha) = next(gen)
-        debug_log("load_video_probe", video=kwargs['video'], width=width, height=height, fps=fps, duration=duration, total_frames=total_frames, loaded_width=new_width, loaded_height=new_height, alpha=alpha)
+        debug_log("load_video_probe", filename=os.path.basename(kwargs['video']), width=width, height=height, fps=fps, duration=duration, total_frames=total_frames, loaded_width=new_width, loaded_height=new_height, alpha=alpha)
 
         if meta_batch is not None:
             meta_batch.inputs[unique_id] = (gen, width, height, fps, duration, total_frames, target_frame_time, yieldable_frames, new_width, new_height, alpha)
@@ -380,7 +387,7 @@ def load_video(meta_batch=None, unique_id=None, memory_limit_mb=None, vae=None,
     else:
         frame_cost = estimate_frame_memory(new_width, new_height, 4 if alpha else 3, multiplier=2.0)
     max_loadable_frames = max(1, int(memory_limit // frame_cost)) if memory_limit != BIGMAX else BIGMAX
-    debug_log("load_video_memory_budget", video=kwargs['video'], memory_limit=memory_limit, frame_cost=frame_cost, max_loadable_frames=max_loadable_frames)
+    debug_log("load_video_memory_budget", filename=os.path.basename(kwargs['video']), memory_limit=memory_limit, frame_cost=frame_cost, max_loadable_frames=max_loadable_frames)
     if meta_batch is not None:
         if 'frames' in format:
             if meta_batch.frames_per_batch % format['frames'][0] != format['frames'][1]:
@@ -534,7 +541,7 @@ class LoadVideoPath:
 
     def load_video(self, **kwargs):
         if kwargs['video'] is None or validate_path(kwargs['video']) != True:
-            raise Exception("video is not a valid path: " + kwargs['video'])
+            raise Exception("Video source is not authorized or does not exist.")
         if is_url(kwargs['video']):
             downloaded = try_download_video(kwargs['video'])
             if downloaded is None:
@@ -640,7 +647,7 @@ class LoadVideoFFmpegPath:
 
     def load_video(self, **kwargs):
         if kwargs['video'] is None or validate_path(kwargs['video']) != True:
-            raise Exception("video is not a valid path: " + kwargs['video'])
+            raise Exception("Video source is not authorized or does not exist.")
         if is_url(kwargs['video']):
             downloaded = try_download_video(kwargs['video'])
             if downloaded is None:
@@ -687,7 +694,7 @@ class LoadImagePath:
 
     def load_image(self, **kwargs):
         if kwargs['image'] is None or validate_path(kwargs['image']) != True:
-            raise Exception("image is not a valid path: " + kwargs['image'])
+            raise Exception("Image source is not authorized or does not exist.")
         kwargs.update({'video':  kwargs['image'], 'force_rate': 0, 'frame_load_cap': 0,
                       'start_time': 0})
         kwargs.pop('image')

@@ -5,10 +5,10 @@ import json
 import os
 import re
 
-import folder_paths
 from PIL.PngImagePlugin import PngInfo
 
-from .utils import ENCODE_ARGS
+from .path_policy import PathAccessDenied, PathCapability
+from .utils import ENCODE_ARGS, get_path_policy
 
 
 _SEQUENCE_COUNTER_RE = re.compile(r"%(0?)(\d*)d")
@@ -137,32 +137,57 @@ def _finalize_ffmpeg_process(proc, file_path, context):
 
 def _path_is_inside_directory(path, directory):
     try:
+        canonical_directory = os.path.normcase(os.path.realpath(os.path.abspath(directory)))
+        canonical_path = os.path.normcase(os.path.realpath(os.path.abspath(path)))
         return os.path.commonpath(
-            [os.path.abspath(directory), os.path.abspath(path)]
-        ) == os.path.abspath(directory)
-    except ValueError:
+            [canonical_directory, canonical_path]
+        ) == canonical_directory
+    except (OSError, TypeError, ValueError):
         return False
 
 
+def _authorize_output_file(file_path, capability=PathCapability.WRITE_OUTPUT):
+    try:
+        authorized = get_path_policy().authorize_path(file_path, capability)
+    except PathAccessDenied:
+        raise Exception("Tried to access output from invalid directory.") from None
+    if authorized.root_id not in {"output", "temp"}:
+        raise Exception("Tried to access output from invalid directory.")
+    return authorized
+
+
+def _delete_output_files(file_paths):
+    # CRITICAL: validate the complete candidate set before deleting any artifact.
+    authorized_paths = []
+    seen = set()
+    for file_path in file_paths:
+        authorized = _authorize_output_file(
+            file_path,
+            PathCapability.DELETE_ARTIFACT,
+        )
+        comparison = os.path.normcase(authorized.canonical)
+        if comparison not in seen:
+            authorized_paths.append(authorized)
+            seen.add(comparison)
+
+    for authorized in authorized_paths:
+        try:
+            current = get_path_policy().reauthorize_path(authorized)
+        except PathAccessDenied:
+            raise Exception("Tried to access output from invalid directory.") from None
+        if current.root_id not in {"output", "temp"}:
+            raise Exception("Tried to access output from invalid directory.")
+        if os.path.exists(current.canonical):
+            os.remove(current.canonical)
+
+
 def _remove_output_file_if_exists(file_path, output_dirs=None):
-    if output_dirs is None:
-        output_dirs = [
-            folder_paths.get_output_directory(),
-            folder_paths.get_temp_directory(),
-        ]
-    if not any(_path_is_inside_directory(file_path, directory) for directory in output_dirs):
-        raise Exception("Tried to cleanup output from invalid directory: " + file_path)
-    if os.path.exists(file_path):
-        os.remove(file_path)
+    # output_dirs remains accepted for compatibility; server policy is authoritative.
+    _delete_output_files([file_path])
 
 
 def _cleanup_partial_output_files(file_paths):
-    cleaned = set()
-    for file_path in reversed(file_paths):
-        if file_path in cleaned:
-            continue
-        _remove_output_file_if_exists(file_path)
-        cleaned.add(file_path)
+    _delete_output_files(reversed(file_paths))
 
 
 def _get_workflow_extra_options(extra_pnginfo):

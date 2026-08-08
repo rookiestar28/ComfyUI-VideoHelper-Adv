@@ -25,6 +25,7 @@ class CoreModuleBoundaryTests(unittest.TestCase):
             "videohelpersuite.media_encode",
             "videohelpersuite.video_combine",
             "videohelpersuite.utils",
+            "videohelpersuite.path_policy",
             "videohelpersuite.logger",
             "videohelpersuite.image_latent_nodes",
             "videohelpersuite.load_video_nodes",
@@ -35,6 +36,9 @@ class CoreModuleBoundaryTests(unittest.TestCase):
             "comfy",
             "torch",
             "nodes",
+            "PIL",
+            "cv2",
+            "psutil",
         )
         install_base_stubs(self.workspace.path)
         install_nodes_dependency_stubs()
