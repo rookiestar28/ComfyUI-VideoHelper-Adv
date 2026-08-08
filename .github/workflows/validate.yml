@@ -1,0 +1,70 @@
+name: Validate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - dev
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: windows-latest
+            python: "3.12"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "20"
+
+      - name: Create environment and install test requirements (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --disable-pip-version-check -r requirements-test.txt
+
+      - name: Run repository checks (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash scripts/run_pre_push_checks.sh
+
+      - name: Create environment and install test requirements (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          python -m venv .venv
+          .venv\Scripts\python.exe -m pip install --disable-pip-version-check -r requirements-test.txt
+
+      - name: Run repository checks (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File scripts/run_repo_checks.ps1
