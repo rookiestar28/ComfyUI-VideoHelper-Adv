@@ -5,7 +5,7 @@ import struct
 import tempfile
 import unittest
 import zlib
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from scripts.runtime.run_runtime_matrix import (
     ResultSafetyError,
@@ -540,7 +540,9 @@ class ScenarioEvaluationTests(unittest.TestCase):
         self.assertEqual(set(variants), {"outside", "cross_drive"})
         self.assertTrue(variants["outside"]["prompt"]["2"]["inputs"]["filename_prefix"].startswith("../"))
         self.assertEqual(
-            Path(variants["cross_drive"]["prompt"]["2"]["inputs"]["filename_prefix"]).drive.upper(),
+            PureWindowsPath(
+                variants["cross_drive"]["prompt"]["2"]["inputs"]["filename_prefix"]
+            ).drive.upper(),
             "Z:",
         )
 
@@ -555,7 +557,7 @@ class ScenarioEvaluationTests(unittest.TestCase):
 
                 def submit_prompt(self, fixture):
                     prefix = fixture["prompt"]["2"]["inputs"]["filename_prefix"]
-                    if prefix.startswith("../") or Path(prefix).drive:
+                    if prefix.startswith("../") or PureWindowsPath(prefix).drive:
                         raise ComfyApiError("rejected")
                     artifact = output / "runtime" / "filename_template_path_ux" / "clip_64x48_00001.mp4"
                     artifact.parent.mkdir(parents=True)
