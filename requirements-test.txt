@@ -1,3 +1,4 @@
 -r requirements.txt
 Pillow
 PyYAML
+tomli; python_version < "3.11"

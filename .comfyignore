@@ -1,0 +1,11 @@
+# Registry packages contain install-time/runtime files only.
+.github/
+.githooks/
+.gitignore
+.comfyignore
+AGENTS.md
+ROADMAP.md
+requirements-test.txt
+scripts/
+testframework/
+tests/

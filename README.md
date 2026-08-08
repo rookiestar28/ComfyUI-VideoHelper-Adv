@@ -1,4 +1,4 @@
-# ComfyUI-VideoHelper_Adv
+# ComfyUI-VideoHelper-Adv
 
 Video workflow nodes for ComfyUI, based on
 [Kosinkadink/ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite).
@@ -30,8 +30,8 @@ Install this fork into ComfyUI's `custom_nodes` directory:
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/rookiestar28/ComfyUI-VideoHelper_Adv.git
-cd ComfyUI-VideoHelper_Adv
+git clone https://github.com/rookiestar28/ComfyUI-VideoHelper-Adv.git
+cd ComfyUI-VideoHelper-Adv
 pip install -r requirements.txt
 ```
 
