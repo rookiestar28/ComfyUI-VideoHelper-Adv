@@ -55,6 +55,11 @@ class RuntimeValidationMatrixTests(unittest.TestCase):
             for substitute in substitutes:
                 path = substitute.get("path")
                 self.assertTrue(path, scenario["id"])
+                if substitute.get("type") == "source_reference":
+                    normalized = path.replace("\\", "/").lower()
+                    self.assertTrue(normalized.startswith("reference/"), path)
+                    # Internal reference repositories are intentionally absent in clean CI.
+                    continue
                 self.assertTrue((REPO_ROOT / path).exists(), path)
 
     def test_runtime_statuses_are_explicit_and_safe(self):

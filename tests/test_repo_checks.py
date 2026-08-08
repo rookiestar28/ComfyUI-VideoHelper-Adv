@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from scripts.run_repo_checks import (
     CheckStep,
@@ -74,6 +75,15 @@ class RepoCheckRunnerTests(unittest.TestCase):
             outside.write_text("", encoding="utf-8")
             self.assertTrue(is_project_venv_python(root, local))
             self.assertFalse(is_project_venv_python(root, outside))
+
+            posix_launcher = root / ".venv" / "bin" / "python"
+            # POSIX venv launchers normally symlink to a base interpreter outside the venv.
+            with mock.patch.object(
+                Path,
+                "resolve",
+                side_effect=AssertionError("venv containment must not dereference the launcher"),
+            ):
+                self.assertTrue(is_project_venv_python(root, posix_launcher))
 
     def test_shell_wrappers_delegate_to_the_shared_runner(self):
         bash_source = (REPO_ROOT / "scripts" / "run_pre_push_checks.sh").read_text(encoding="utf-8")

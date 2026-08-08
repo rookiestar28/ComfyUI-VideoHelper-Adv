@@ -222,7 +222,7 @@ class PluginSnapshotTests(unittest.TestCase):
 
             with mock.patch(
                 "scripts.runtime.harness._is_reparse_point",
-                side_effect=lambda path: Path(path) == escaped,
+                side_effect=lambda path: Path(path).name == escaped.name,
             ):
                 with self.assertRaisesRegex(PluginSnapshotError, "reparse"):
                     copy_runtime_plugin(workspace, layout)

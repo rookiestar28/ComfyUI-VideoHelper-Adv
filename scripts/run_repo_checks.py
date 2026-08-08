@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -121,10 +122,18 @@ def parse_node_major(version: str) -> int:
 def is_project_venv_python(repo_root: Path, executable: Path) -> bool:
     """Return whether the interpreter is contained by an approved repo-local venv."""
 
-    resolved_executable = executable.resolve()
+    # SECURITY: compare the invoked path lexically; POSIX venv launchers legitimately
+    # symlink to a base interpreter, while normpath/commonpath still reject `..` escapes.
+    executable_path = os.path.normcase(os.path.abspath(os.fspath(executable)))
     for venv_name in (".venv", ".venv-wsl"):
-        resolved_venv = (repo_root / venv_name).resolve()
-        if resolved_executable == resolved_venv or resolved_venv in resolved_executable.parents:
+        venv_path = os.path.normcase(
+            os.path.abspath(os.fspath(repo_root / venv_name))
+        )
+        try:
+            contained = os.path.commonpath((venv_path, executable_path)) == venv_path
+        except ValueError:
+            contained = False
+        if contained:
             return True
     return False
 
