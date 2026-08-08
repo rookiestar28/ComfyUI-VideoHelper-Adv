@@ -357,12 +357,13 @@ function addPreviewOptions(nodeType) {
                 }
             );
             if (previewWidget.value.params.fullpath) {
-                copiedPath = previewWidget.value.params.fullpath
-                const blob = new Blob([previewWidget.value.params.fullpath],
+                const fullpath = previewWidget.value.params.fullpath
+                const blob = new Blob([fullpath],
                     { type: 'text/plain'})
                 optNew.push({
                     content: "Copy output filepath",
                     callback: async () => {
+                        copiedPath = fullpath
                         await navigator.clipboard.write([
                             new ClipboardItem({
                                 'text/plain': blob
@@ -439,5 +440,10 @@ function addPreviewOptions(nodeType) {
     });
 }
 
-    return { addAudioPreview, addVideoPreview, addPreviewOptions }
+    return {
+        addAudioPreview,
+        addVideoPreview,
+        addPreviewOptions,
+        getCopiedPath: () => copiedPath,
+    }
 }

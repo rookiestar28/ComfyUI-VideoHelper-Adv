@@ -220,6 +220,42 @@ class UtilsReliabilityTests(unittest.TestCase):
         for name in ("ffmpeg", "ffprobe", "gifski", "ytdl"):
             self.assertIsInstance(summary[name], bool)
 
+    def test_merge_filter_args_combines_repeated_simple_filters(self):
+        args = ["ffmpeg", "-vf", "loop=2", "-vf", "scale=320:240", "out.mp4"]
+
+        self.utils.merge_filter_args(args)
+
+        self.assertEqual(
+            args,
+            ["ffmpeg", "-vf", "loop=2,scale=320:240", "out.mp4"],
+        )
+
+    def test_merge_filter_args_leaves_complex_only_filter_unchanged(self):
+        args = ["ffmpeg", "-filter_complex", "[0:v]split[a][b]", "out.gif"]
+
+        self.utils.merge_filter_args(args)
+
+        self.assertEqual(
+            args,
+            ["ffmpeg", "-filter_complex", "[0:v]split[a][b]", "out.gif"],
+        )
+
+    def test_merge_filter_args_rejects_mixed_complex_and_simple_without_mutation(self):
+        args = [
+            "ffmpeg",
+            "-filter_complex",
+            "[0:v]split[a][b]",
+            "-vf",
+            "loop=2",
+            "out.gif",
+        ]
+        original = list(args)
+
+        with self.assertRaisesRegex(ValueError, "filter_complex"):
+            self.utils.merge_filter_args(args)
+
+        self.assertEqual(args, original)
+
 
 if __name__ == "__main__":
     unittest.main()

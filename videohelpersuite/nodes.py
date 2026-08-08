@@ -444,8 +444,18 @@ class SelectLatest:
     FUNCTION = "select_latest"
     EXPERIMENTAL = True
 
+    @classmethod
+    def VALIDATE_INPUTS(cls, **_kwargs):
+        return (
+            "VHS_SelectLatest is a frontend-only virtual node and must be "
+            "virtualized before queueing."
+        )
+
     def select_latest(self, filename_prefix, filename_postfix):
-        assert False, "Not Reachable"
+        # IMPORTANT: the current ComfyUI host omits virtual nodes from API prompts.
+        raise RuntimeError(
+            "VHS_SelectLatest is a frontend-only virtual node and must be virtualized before queueing."
+        )
 
 NODE_CLASS_MAPPINGS = {
     "VHS_VideoCombine": VideoCombine,

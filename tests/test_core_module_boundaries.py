@@ -129,6 +129,20 @@ class CoreModuleBoundaryTests(unittest.TestCase):
             },
         )
 
+    def test_select_latest_backend_fails_safely_without_assertion(self):
+        nodes_mod = import_fresh("videohelpersuite.nodes")
+
+        validation = nodes_mod.SelectLatest.VALIDATE_INPUTS(
+            filename_prefix="output/example",
+            filename_postfix=".mp4",
+        )
+        self.assertIn("frontend-only virtual node", validation)
+        with self.assertRaisesRegex(RuntimeError, "frontend-only virtual node"):
+            nodes_mod.SelectLatest().select_latest("output/example", ".mp4")
+
+        source = (ROOT / "videohelpersuite" / "nodes.py").read_text(encoding="utf-8")
+        self.assertNotIn('assert False, "Not Reachable"', source)
+
 
 if __name__ == "__main__":
     unittest.main()

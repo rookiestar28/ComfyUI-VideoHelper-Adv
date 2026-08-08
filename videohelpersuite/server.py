@@ -18,6 +18,7 @@ from .utils import is_url, get_sorted_dir_files_from_directory, ffmpeg_path, \
         validate_sequence, strip_path, try_download_video, ENCODE_ARGS, \
         debug_log, get_path_policy
 from .path_policy import PathAccessDenied, PathCapability
+from .query_cache import AuthorizedMetadataCache
 from comfy.k_diffusion.utils import FolderOfImages
 
 
@@ -329,7 +330,7 @@ async def view_audio(request):
         debug_event="view_audio_preview",
     )
 
-query_cache = {}
+query_cache = AuthorizedMetadataCache(max_entries=128)
 @server.PromptServer.instance.routes.get("/vhs/queryvideo")
 async def query_video(request):
     query = request.rel_url.query
@@ -343,9 +344,20 @@ async def query_video(request):
         return web.json_response({})
     if av is None:
         return web.json_response({"error": "PyAV is not installed; video metadata probing is unavailable."}, status=503)
-    if filepath in query_cache and query_cache[filepath][0] == os.stat(filepath).st_mtime:
-        source = query_cache[filepath][1]
-    else:
+    policy = get_path_policy()
+    try:
+        authorized = policy.authorize_path(filepath, PathCapability.PREVIEW_MEDIA)
+        source = query_cache.get(authorized, policy)
+    except PathAccessDenied as exc:
+        debug_log(
+            "query_video_cache_denied",
+            capability=exc.capability.value,
+            reason=exc.reason,
+        )
+        return error_response(403, "Requested media path is not authorized.")
+    except OSError:
+        return error_response(404, "Media file not found.")
+    if source is None:
         source = {}
         try:
             with av.open(filepath) as cont:
@@ -365,13 +377,25 @@ async def query_video(request):
                 source['size'] = [frame.width, frame.height]
                 source['alpha'] = 'a' in frame.format.name
                 source['frames'] = stream.metadata.get('NUMBER_OF_FRAMES', round(source['duration'] * source['fps']))
-                query_cache[filepath] = (os.stat(filepath).st_mtime, source)
         except Exception as exc:
+            source = {}
             debug_log(
                 "query_video_failed",
                 filename=os.path.basename(filepath),
                 error_type=type(exc).__name__,
             )
+        if 'frames' in source:
+            try:
+                query_cache.put(authorized, source, policy)
+            except PathAccessDenied as exc:
+                debug_log(
+                    "query_video_cache_store_denied",
+                    capability=exc.capability.value,
+                    reason=exc.reason,
+                )
+                return error_response(403, "Requested media path is not authorized.")
+            except OSError:
+                return error_response(404, "Media file not found.")
     if not 'frames' in source:
         return web.json_response({"error": "Failed to read video metadata."}, status=422)
     loaded = {}

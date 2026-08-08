@@ -7,6 +7,8 @@ import { createUploadTransport } from "./uploadTransport.js";
 import { createMediaPreview } from "./mediaPreview.js";
 import { createPathWidgets } from "./pathWidgets.js";
 import { createLatentPreview } from "./latentPreview.js";
+import { createPasteHandler } from "./pasteHandler.js";
+import { configureSelectLatestNode } from "./selectLatest.js";
 
 function chainCallback(object, property, callback) {
     if (object == undefined) {
@@ -595,13 +597,6 @@ function addDateFormatting(nodeType, field, timestamp_widget = false) {
         };
     });
 }
-function addTimestampWidget(nodeType, nodeData, targetWidget) {
-    // Deprecated helper intentionally retained as a no-op for compatibility.
-    console.warn("[VHS] addTimestampWidget is deprecated and disabled", {
-        nodeType: nodeType?.name,
-        targetWidget,
-    })
-}
 function initializeLoadFormat(nodeType, nodeData) {
     if (!nodeData?.input?.optional?.format) {
         return
@@ -679,6 +674,7 @@ const {
     addAudioPreview,
     addVideoPreview,
     addPreviewOptions,
+    getCopiedPath,
 } = createMediaPreview({
     app,
     api,
@@ -764,6 +760,7 @@ function addLoadCommon(nodeType, nodeData) {
 const {
     path_stem,
     searchBox,
+    fitText,
     fitPath,
     roundToPrecision,
     drawAnnotated,
@@ -1030,10 +1027,6 @@ app.registerExtension({
             addPreviewOptions(nodeType);
             addFormatWidgets(nodeType, nodeData);
             addVAEInputToggle(nodeType, nodeData)
-        } else if (nodeData?.name == "VHS_SaveImageSequence") {
-            //Disabled for safety as VHS_SaveImageSequence is not currently merged
-            //addDateFormating(nodeType, "directory_name", timestamp_widget=true);
-            //addTimestampWidget(nodeType, nodeData, "directory_name")
         } else if (nodeData?.name == "VHS_BatchManager") {
             chainCallback(nodeType.prototype, "onNodeCreated", function() {
                 this.widgets.push({name: "count", type: "dummy", value: 0,
@@ -1044,73 +1037,13 @@ app.registerExtension({
             cloneType(nodeType, nodeData)
         } else if (nodeData?.name == "VHS_SelectLatest") {
             chainCallback(nodeType.prototype, "onNodeCreated", function() {
-                this.isVirtualNode = true
-                chainCallback(this, "onConnectionsChange", function (contype, slot, iscon, linfo) {
-                    if (iscon) {
-                        this.update_links()
-                    }
+                configureSelectLatestNode(this, {
+                    app,
+                    api,
+                    fetchWithOptionalAuth,
+                    pathStem: path_stem,
+                    chainCallback,
                 })
-
-                this.update_links = function(extraLinks = []) {
-                    if (!this.outputs[0].links?.length) return
-
-                    function get_links(node) {
-                        let links = []
-                        for (const l of node.outputs[0].links) {
-                            const linkInfo = node.graph.links[l]
-                            const n = node.graph.getNodeById(linkInfo.target_id)
-                            if (n.type == 'Reroute') {
-                                links = links.concat(get_links(n))
-                            } else {
-                                links.push(l)
-                            }
-                        }
-                        return links
-                    }
-
-                    let links = [
-                        ...get_links(this).map((l) => this.graph.links[l]),
-                        ...extraLinks
-                    ]
-                    let v = this.latest_file
-                    if (!v) {
-                        return
-                    }
-
-                    // For each output link copy our value over the original widget value
-                    for (const linkInfo of links) {
-                        const node = this.graph.getNodeById(linkInfo.target_id)
-                        const input = node.inputs[linkInfo.target_slot]
-                        const widgetName = input.widget.name
-                        const widget = node.widgets.find((w) => w.name === widgetName)
-                        if (widget) {
-                            widget.value = v
-                            if (widget.callback) {
-                                widget.callback( widget.value, app.canvas,
-                                    node, app.canvas.graph_mouse, {})
-                            }
-                        }
-                    }
-                }
-                let fetch_files = async () => {
-                    let [path, remainder] = path_stem(this.widgets[0].value)
-                    let params = {path : path}
-                    let optionsURL = api.apiURL('/vhs/getpath?' + new URLSearchParams(params));
-                    let options = []
-                    try {
-                        let resp = await fetch(optionsURL);
-                        options = await resp.json();
-                    } catch(e) {}
-                    options = options.filter((file) => file.startsWith(remainder) && file.endsWith(this.widgets[1].value))
-                    if (options.length && this.latest_file != options[options.length-1]) {
-                        this.latest_file = path + options[options.length-1]
-                        this.update_links()
-                    }
-                }
-                this.widgets[0].callback = fetch_files
-                this.widgets[1].callback = fetch_files
-                this.onPromptExecuted  = fetch_files
-                this.applyToGraph = this.update_links
             })
         }
     },
@@ -1327,55 +1260,11 @@ app.registerExtension({
             return res
         }
         app.graphToPrompt = graphToPrompt
-        //Add a handler for pasting video data
-        document.addEventListener('paste', async (e) => {
-            if (!e.target.classList.contains('litegraph') &&
-                !e.target.classList.contains('graph-canvas-container')) {
-                    return
-                }
-            let data = e.clipboardData || window.clipboardData
-            let filepath = data.getData('text/plain')
-            let video
-            for (const item of data.items) {
-                if (item.type.startsWith('video/')) {
-                    video = item
-                    break
-                }
-            }
-            if (filepath && copiedPath == filepath) {
-                //Add a Load Video (Path) and populate filepath
-                const pastedNode = LiteGraph.createNode('VHS_LoadVideoPath')
-                app.canvas.graph.add(pastedNode)
-                pastedNode.pos[0] = app.canvas.graph_mouse[0]
-                pastedNode.pos[1] = app.canvas.graph_mouse[1]
-                pastedNode.widgets[0].value = filepath
-                pastedNode.widgets[0].callback?.(filepath)
-            } else if (video && false) {
-                //Disabled due to lack of testing
-                //Add a Load Video (Upload), then upload the file, then select the file
-                const pastedNode = LiteGraph.createNode('VHS_LoadVideo')
-                app.canvas.graph.add(pastedNode)
-                pastedNode.pos[0] = app.canvas.graph_mouse[0]
-                pastedNode.pos[1] = app.canvas.graph_mouse[1]
-                const pathWidget = pastedNode.widgets[0]
-                //TODO: upload to pasted dir?
-                const blob = video.getAsFile()
-                const resp = await uploadFile(blob)
-                if (!resp?.ok || !resp.path) {
-                    //upload failed and file can not be added to options
-                    return;
-                }
-                const filename = resp.path;
-                pathWidget.options.values.push(filename);
-                pathWidget.value = filename;
-                pathWidget.callback?.(filename)
-            } else {
-                return
-            }
-            e.preventDefault()
-            e.stopImmediatePropagation()
-            return false
-        }, true)
+        document.addEventListener(
+            "paste",
+            createPasteHandler({ app, LiteGraph, getCopiedPath }),
+            true,
+        )
     },
     async init() {
         if (app.ui.settings.getSettingValue("VHS.AdvancedPreviews") == true) {

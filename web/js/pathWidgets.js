@@ -1,3 +1,62 @@
+export function splitPath(path) {
+    const value = String(path ?? "")
+    const index = Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\"))
+    if (index >= 0) {
+        return [value.slice(0, index + 1), value.slice(index + 1)]
+    }
+    return ["", value]
+}
+
+function displayRoot(path) {
+    if (/^[A-Za-z]:[\\/]/.test(path)) {
+        return path.slice(0, 3) + "…" + path[2]
+    }
+    if (/^(?:\\\\|\/\/)/.test(path)) {
+        const separator = path[0]
+        return separator + separator + "…" + separator
+    }
+    if (path.startsWith("/")) {
+        return "/…/"
+    }
+    const separator = path.includes("\\") ? "\\" : "/"
+    return "…" + separator
+}
+
+export function fitPathForDisplay(ctx, path, maxLength) {
+    const value = String(path ?? "")
+    if (maxLength <= 0) return ["", 0]
+    const fullLength = ctx.measureText(value).width
+    if (fullLength < maxLength) return [value, fullLength]
+
+    const estimatedCharacters = Math.max(
+        1,
+        Math.floor(maxLength / Math.max(fullLength, 1) * value.length) - 1,
+    )
+    const filename = splitPath(value)[1]
+    const root = displayRoot(value)
+    let displayPath
+    if (root.length + filename.length >= estimatedCharacters) {
+        const filenameBudget = Math.max(1, estimatedCharacters - root.length)
+        const shortenedFilename = filename.length > filenameBudget
+            ? filename.slice(0, Math.max(0, filenameBudget - 1)) + "…"
+            : filename
+        displayPath = root.slice(0, Math.max(0, estimatedCharacters - shortenedFilename.length)) + shortenedFilename
+    } else {
+        const remaining = Math.max(0, estimatedCharacters - root.length - filename.length)
+        const directory = splitPath(value)[0]
+        const tail = directory.slice(Math.max(0, directory.length - remaining))
+        displayPath = root + tail + filename
+        if (displayPath.length > estimatedCharacters) {
+            displayPath = displayPath.slice(displayPath.length - estimatedCharacters)
+        }
+    }
+    while (displayPath.length > 1 && ctx.measureText(displayPath).width > maxLength) {
+        displayPath = displayPath.slice(0, -2) + "…"
+    }
+    if (ctx.measureText(displayPath).width > maxLength) return ["", 0]
+    return [displayPath, ctx.measureText(displayPath).width]
+}
+
 export function createPathWidgets({
     app,
     api,
@@ -5,13 +64,7 @@ export function createPathWidgets({
     debugLog,
     LiteGraph,
 }) {
-function path_stem(path) {
-    let i = path.lastIndexOf("/");
-    if (i >= 0) {
-        return [path.slice(0,i+1),path.slice(i+1)];
-    }
-    return ["",path];
-}
+const path_stem = splitPath
 function searchBox(event, [x,y], node) {
     //Ensure only one dialogue shows at a time
     if (this.prompt)
@@ -210,31 +263,7 @@ function fitText(ctx, text, maxLength) {
     return [shortened, ctx.measureText(shortened).width]
 }
 function fitPath(ctx, path, maxLength) {
-    let fullLength = ctx.measureText(path).width
-    if (fullLength < maxLength) {
-        return [path, fullLength]
-    }
-    //determine approx safe cutoff
-    let len = (maxLength / fullLength * path.length | 0) - 1
-
-    let displayPath = ''
-    let filename = path_stem(path)[1]
-    if (filename.length > len-2) {
-        //may all fit, but can't squeeze more info
-         displayPath = filename.substr(0,len);
-    } else {
-        //TODO: find solution for windows, path[1] == ':'?
-        let isAbs = path[0] == '/';
-        let partial = path.substr(path.length - (isAbs ? len-2:len-1))
-        let cutoff = partial.indexOf('/');
-        if (cutoff < 0) {
-            //Can occur, but there isn't a nicer way to format
-            displayPath = path.substr(path.length-len);
-        } else {
-            displayPath = (isAbs ? '/…':'…') + partial.substr(cutoff);
-        }
-    }
-    return [displayPath, ctx.measureText(displayPath).width]
+    return fitPathForDisplay(ctx, path, maxLength)
 }
 function roundToPrecision(num, precision) {
     let strnum = Number(num).toFixed(precision)
@@ -451,6 +480,7 @@ function mouseAnnotated(event, [x, y], node) {
     return {
         path_stem,
         searchBox,
+        fitText,
         fitPath,
         roundToPrecision,
         drawAnnotated,

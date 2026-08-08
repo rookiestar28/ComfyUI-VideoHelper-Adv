@@ -94,13 +94,14 @@ test('asset response without a materialized filename falls back to legacy upload
   }
 });
 
-test('path widget domain retains precision and tail-preserving display helpers', () => {
-  const { roundToPrecision, fitPath } = createPathWidgets({
+test('path widget domain retains all core drawing helpers', () => {
+  const { roundToPrecision, fitPath, fitText } = createPathWidgets({
     app: {}, api: {}, fetchWithOptionalAuth: async () => {}, debugLog: () => {}, LiteGraph: {},
   });
   const ctx = { measureText: (text) => ({ width: text.length }) };
 
   assert.equal(roundToPrecision(12.340, 3), '12.34');
+  assert.deepEqual(fitText(ctx, 'long-label', 6), ['long…', 5]);
   assert.equal(fitPath(ctx, '/deep/tree/clip.mp4', 12)[0].endsWith('clip.mp4'), true);
 });
 

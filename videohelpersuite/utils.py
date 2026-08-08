@@ -561,9 +561,11 @@ def select_indexes(input_obj: Union[Tensor, list], idxs: list):
         return [input_obj[i] for i in idxs]
 
 def merge_filter_args(args, ftype="-vf"):
-    #TODO This doesn't account for filter_complex
-    #Will likely need to convert all filters to filter complex in the future
-    #But that requires source/output deduplication
+    if any(flag in args for flag in ("-filter_complex", "-lavfi")) and ftype in args:
+        # CRITICAL: simple and complex filters cannot be merged without explicit graph labels/maps.
+        raise ValueError(
+            f"Unsupported FFmpeg filter composition: filter_complex cannot be combined with {ftype}."
+        )
     try:
         start_index = args.index(ftype)+1
         index = start_index

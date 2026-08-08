@@ -278,6 +278,107 @@ class ServerReliabilityTests(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertFalse(temp_file.exists())
 
+    def test_query_video_cache_hits_and_invalidates_after_file_change(self):
+        sample_file = self.paths["output_dir"] / "query.mp4"
+        sample_file.write_bytes(b"first")
+        open_calls = []
+
+        class Frame:
+            width = 64
+            height = 48
+            format = types.SimpleNamespace(name="rgb24")
+
+        class Stream:
+            average_rate = 8
+            codec_context = types.SimpleNamespace(name="h264")
+            metadata = {"NUMBER_OF_FRAMES": 8}
+
+            def decode(self, _packet):
+                return [Frame()]
+
+        stream = Stream()
+
+        class Container:
+            duration = 1_000_000
+            streams = types.SimpleNamespace(video=[stream])
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def demux(self, **_kwargs):
+                return [object()]
+
+        self.server_mod.av = types.SimpleNamespace(
+            time_base=1_000_000,
+            open=lambda path: open_calls.append(path) or Container(),
+        )
+        request = types.SimpleNamespace(rel_url=types.SimpleNamespace(query={
+            "filename": "query.mp4",
+            "type": "output",
+        }))
+
+        first = self._run(self.server_mod.query_video(request))
+        second = self._run(self.server_mod.query_video(request))
+        sample_file.write_bytes(b"changed-size")
+        third = self._run(self.server_mod.query_video(request))
+
+        self.assertEqual([first.status, second.status, third.status], [200, 200, 200])
+        self.assertEqual(len(open_calls), 2)
+        self.assertEqual(first.data["source"], second.data["source"])
+
+    def test_query_video_does_not_return_probed_metadata_when_cache_store_is_denied(self):
+        sample_file = self.paths["output_dir"] / "denied-after-probe.mp4"
+        sample_file.write_bytes(b"first")
+
+        class Frame:
+            width = 64
+            height = 48
+            format = types.SimpleNamespace(name="rgb24")
+
+        class Stream:
+            average_rate = 8
+            codec_context = types.SimpleNamespace(name="h264")
+            metadata = {"NUMBER_OF_FRAMES": 8}
+
+            def decode(self, _packet):
+                return [Frame()]
+
+        class Container:
+            duration = 1_000_000
+            streams = types.SimpleNamespace(video=[Stream()])
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def demux(self, **_kwargs):
+                return [object()]
+
+        self.server_mod.av = types.SimpleNamespace(
+            time_base=1_000_000,
+            open=lambda _path: Container(),
+        )
+        original_put = self.server_mod.query_cache.put
+        self.server_mod.query_cache.put = lambda authorized, source, policy: (_ for _ in ()).throw(
+            self.server_mod.PathAccessDenied(authorized.capability, "test denial")
+        )
+        request = types.SimpleNamespace(rel_url=types.SimpleNamespace(query={
+            "filename": sample_file.name,
+            "type": "output",
+        }))
+        try:
+            response = self._run(self.server_mod.query_video(request))
+        finally:
+            self.server_mod.query_cache.put = original_put
+
+        self.assertEqual(response.status, 403)
+        self.assertNotIn(str(sample_file), response.text)
+
 
 def mock_async(return_value):
     async def _mock(*_args, **_kwargs):

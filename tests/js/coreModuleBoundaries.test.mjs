@@ -8,6 +8,8 @@ const moduleURLs = {
   preview: new URL('../../web/js/mediaPreview.js', import.meta.url),
   paths: new URL('../../web/js/pathWidgets.js', import.meta.url),
   latent: new URL('../../web/js/latentPreview.js', import.meta.url),
+  paste: new URL('../../web/js/pasteHandler.js', import.meta.url),
+  selectLatest: new URL('../../web/js/selectLatest.js', import.meta.url),
 };
 
 test('frontend domains exist and core is the sole extension registration owner', async () => {
@@ -24,6 +26,8 @@ test('frontend domains exist and core is the sole extension registration owner',
   assert.match(sources.core, /from\s+["']\.\/mediaPreview\.js["']/);
   assert.match(sources.core, /from\s+["']\.\/pathWidgets\.js["']/);
   assert.match(sources.core, /from\s+["']\.\/latentPreview\.js["']/);
+  assert.match(sources.core, /from\s+["']\.\/pasteHandler\.js["']/);
+  assert.match(sources.core, /from\s+["']\.\/selectLatest\.js["']/);
 });
 
 test('extracted frontend modules own domain entry points without duplicate core definitions', async () => {
@@ -33,6 +37,8 @@ test('extracted frontend modules own domain entry points without duplicate core 
     preview: ['createMediaPreview'],
     paths: ['createPathWidgets'],
     latent: ['createLatentPreview'],
+    paste: ['createPasteHandler'],
+    selectLatest: ['configureSelectLatestNode'],
   };
   for (const [name, exports] of Object.entries(expected)) {
     const source = await readFile(moduleURLs[name], 'utf8');
