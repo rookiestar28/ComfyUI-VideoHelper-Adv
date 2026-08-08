@@ -1,3 +1,4 @@
+import importlib
 import unittest
 
 from tests._support import (
@@ -14,6 +15,10 @@ class FormatWidgetSchemaTests(unittest.TestCase):
         self.workspace = TempWorkspace()
         purge_modules(
             "videohelpersuite.nodes",
+            "videohelpersuite.format_registry",
+            "videohelpersuite.output_artifacts",
+            "videohelpersuite.media_encode",
+            "videohelpersuite.video_combine",
             "videohelpersuite.utils",
             "videohelpersuite.logger",
             "videohelpersuite.image_latent_nodes",
@@ -29,6 +34,7 @@ class FormatWidgetSchemaTests(unittest.TestCase):
         install_base_stubs(self.workspace.path)
         install_nodes_dependency_stubs()
         self.nodes_mod = import_fresh("videohelpersuite.nodes")
+        self.combine_mod = importlib.import_module("videohelpersuite.video_combine")
 
     def tearDown(self):
         self.workspace.cleanup()
@@ -75,12 +81,12 @@ class FormatWidgetSchemaTests(unittest.TestCase):
             "video/a": [["crf", "INT", {"default": 19, "min": 0, "max": 51}]],
             "video/b": [["crf", "INT", {"default": 23, "min": 0, "max": 63}]],
         }
-        original_get_formats = self.nodes_mod.get_video_formats
-        self.nodes_mod.get_video_formats = lambda: (["video/a", "video/b"], formats)
+        original_get_formats = self.combine_mod.get_video_formats
+        self.combine_mod.get_video_formats = lambda: (["video/a", "video/b"], formats)
         try:
             input_types = self.nodes_mod.VideoCombine.INPUT_TYPES()
         finally:
-            self.nodes_mod.get_video_formats = original_get_formats
+            self.combine_mod.get_video_formats = original_get_formats
 
         self.assertIn("crf", input_types["optional"])
         self.assertEqual(input_types["optional"]["crf"][0], "INT")

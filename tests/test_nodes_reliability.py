@@ -1,3 +1,6 @@
+import importlib
+import contextlib
+import io
 import os
 import types
 import unittest
@@ -63,7 +66,10 @@ class _DummyPipe:
 
     def write(self, data):
         self.owner.writes.append(data)
-        if self.owner.raise_broken_pipe:
+        if self.owner.raise_broken_pipe or (
+            self.owner.raise_broken_pipe_after is not None
+            and len(self.owner.writes) > self.owner.raise_broken_pipe_after
+        ):
             raise BrokenPipeError()
 
     def flush(self):
@@ -91,6 +97,7 @@ class _DummyPopen:
         create_output=False,
         create_sequence_first_frame=False,
         raise_broken_pipe=False,
+        raise_broken_pipe_after=None,
     ):
         self.args = args
         self.returncode = returncode
@@ -98,6 +105,7 @@ class _DummyPopen:
         self.create_output = create_output
         self.create_sequence_first_frame = create_sequence_first_frame
         self.raise_broken_pipe = raise_broken_pipe
+        self.raise_broken_pipe_after = raise_broken_pipe_after
         self.writes = []
         self.stdin = _DummyPipe(self)
         self.stderr = _DummyStderr(self)
@@ -124,6 +132,10 @@ class NodesReliabilityTests(unittest.TestCase):
         self.workspace = TempWorkspace()
         purge_modules(
             "videohelpersuite.nodes",
+            "videohelpersuite.format_registry",
+            "videohelpersuite.output_artifacts",
+            "videohelpersuite.media_encode",
+            "videohelpersuite.video_combine",
             "videohelpersuite.utils",
             "videohelpersuite.logger",
             "videohelpersuite.image_latent_nodes",
@@ -142,6 +154,8 @@ class NodesReliabilityTests(unittest.TestCase):
         self.paths = install_base_stubs(self.workspace.path)
         install_nodes_dependency_stubs()
         self.nodes_mod = import_fresh("videohelpersuite.nodes")
+        self.encode_mod = importlib.import_module("videohelpersuite.media_encode")
+        self.combine_mod = importlib.import_module("videohelpersuite.video_combine")
 
     def tearDown(self):
         self.workspace.cleanup()
@@ -203,7 +217,7 @@ class NodesReliabilityTests(unittest.TestCase):
         def fake_popen(args, **_kwargs):
             return _DummyPopen(args, returncode=1, stderr_data=b"encode failed")
 
-        with mock.patch.object(self.nodes_mod.subprocess, "Popen", side_effect=fake_popen):
+        with mock.patch.object(self.encode_mod.subprocess, "Popen", side_effect=fake_popen):
             process = self.nodes_mod.ffmpeg_process(
                 ["ffmpeg"], {"extension": "mp4"}, {}, str(output_path), {}
             )
@@ -219,7 +233,7 @@ class NodesReliabilityTests(unittest.TestCase):
         def fake_popen(args, **_kwargs):
             return _DummyPopen(args, returncode=0, stderr_data=b"")
 
-        with mock.patch.object(self.nodes_mod.subprocess, "Popen", side_effect=fake_popen):
+        with mock.patch.object(self.encode_mod.subprocess, "Popen", side_effect=fake_popen):
             process = self.nodes_mod.ffmpeg_process(
                 ["ffmpeg"], {"extension": "mp4"}, {}, str(output_path), {}
             )
@@ -234,7 +248,7 @@ class NodesReliabilityTests(unittest.TestCase):
         def fake_popen(args, **_kwargs):
             return _DummyPopen(args, returncode=0, create_sequence_first_frame=True)
 
-        with mock.patch.object(self.nodes_mod.subprocess, "Popen", side_effect=fake_popen):
+        with mock.patch.object(self.encode_mod.subprocess, "Popen", side_effect=fake_popen):
             process = self.nodes_mod.ffmpeg_process(
                 ["ffmpeg"], {"extension": "%03d.png"}, {}, str(output_path), {}
             )
@@ -251,7 +265,7 @@ class NodesReliabilityTests(unittest.TestCase):
         def fake_popen(args, **_kwargs):
             return _DummyPopen(args, returncode=0, create_output=True)
 
-        with mock.patch.object(self.nodes_mod.subprocess, "Popen", side_effect=fake_popen):
+        with mock.patch.object(self.encode_mod.subprocess, "Popen", side_effect=fake_popen):
             process = self.nodes_mod.ffmpeg_process(
                 ["ffmpeg"], {"extension": "mp4"}, {}, str(output_path), {}
             )
@@ -262,6 +276,62 @@ class NodesReliabilityTests(unittest.TestCase):
 
         self.assertEqual(total_frames, 2)
         self.assertTrue(output_path.exists())
+
+    def test_ffmpeg_process_reports_main_encode_broken_pipe_after_partial_write(self):
+        output_path = self.paths["output_dir"] / "broken-after-first-frame.mp4"
+
+        def fake_popen(args, **_kwargs):
+            return _DummyPopen(
+                args,
+                returncode=1,
+                stderr_data=b"encoder stopped",
+                raise_broken_pipe_after=1,
+            )
+
+        with mock.patch.object(self.encode_mod.subprocess, "Popen", side_effect=fake_popen):
+            process = self.nodes_mod.ffmpeg_process(
+                ["ffmpeg"], {"extension": "mp4"}, {}, str(output_path), {}
+            )
+            process.send(None)
+            process.send(b"frame-1")
+            with self.assertRaisesRegex(Exception, "main encode, exit code 1"):
+                process.send(b"frame-2")
+
+        self.assertFalse(output_path.exists())
+
+    def test_ffmpeg_process_metadata_zero_frame_failure_falls_back(self):
+        output_path = self.paths["output_dir"] / "metadata-fallback.mp4"
+        metadata_path = self.paths["temp_dir"] / "metadata.txt"
+        metadata_path.write_text("metadata", encoding="utf-8")
+        processes = iter([
+            _DummyPopen(
+                ["ffmpeg", str(output_path)],
+                returncode=1,
+                stderr_data=b"metadata rejected",
+                raise_broken_pipe=True,
+            ),
+            _DummyPopen(["ffmpeg", str(output_path)], create_output=True),
+        ])
+
+        with mock.patch.object(
+            self.encode_mod,
+            "create_ffmetadata_file",
+            return_value=str(metadata_path),
+        ), mock.patch.object(
+            self.encode_mod.subprocess,
+            "Popen",
+            side_effect=lambda *_args, **_kwargs: next(processes),
+        ):
+            process = self.nodes_mod.ffmpeg_process(
+                ["ffmpeg"], {"extension": "mp4", "save_metadata": "True"}, {}, str(output_path), {}
+            )
+            process.send(None)
+            process.send(b"frame")
+            total_frames = process.send(None)
+
+        self.assertEqual(total_frames, 1)
+        self.assertTrue(output_path.exists())
+        self.assertFalse(metadata_path.exists())
 
     def test_video_combine_meta_batch_image_format_preflight_creates_no_utility_png(self):
         combine = self.nodes_mod.VideoCombine()
@@ -287,7 +357,7 @@ class NodesReliabilityTests(unittest.TestCase):
         combine = self.nodes_mod.VideoCombine()
         images = [_FakeImageTensor(np.zeros((2, 2, 3), dtype=np.float32))]
 
-        with mock.patch.object(self.nodes_mod, "ffmpeg_path", None):
+        with mock.patch.object(self.combine_mod, "ffmpeg_path", None):
             with self.assertRaisesRegex(ProcessLookupError, "ffmpeg is required"):
                 combine.combine_video(
                     images=images,
@@ -338,14 +408,14 @@ class NodesReliabilityTests(unittest.TestCase):
             Path(args[-1]).write_bytes(b"muxed-video")
             return types.SimpleNamespace(stderr=b"")
 
-        with mock.patch.object(self.nodes_mod, "ffmpeg_path", "/usr/bin/ffmpeg"), \
+        with mock.patch.object(self.combine_mod, "ffmpeg_path", "/usr/bin/ffmpeg"), \
              mock.patch.object(
-                 self.nodes_mod,
+                 self.combine_mod,
                  "apply_format_widgets",
                  lambda _ext, _kwargs: {"extension": "%03d.png", "main_pass": [], "supports_audio": False},
              ), \
-             mock.patch.object(self.nodes_mod, "ffmpeg_process", fake_ffmpeg_process), \
-             mock.patch.object(self.nodes_mod.subprocess, "run", side_effect=fake_subprocess_run):
+             mock.patch.object(self.combine_mod, "ffmpeg_process", fake_ffmpeg_process), \
+             mock.patch.object(self.combine_mod.subprocess, "run", side_effect=fake_subprocess_run):
             with self.assertRaisesRegex(Exception, "does not support audio"):
                 combine.combine_video(
                     images=images,
@@ -391,13 +461,13 @@ class NodesReliabilityTests(unittest.TestCase):
             Path(file_path).write_bytes(b"silent-video")
             yield total
 
-        with mock.patch.object(self.nodes_mod, "ffmpeg_path", "/usr/bin/ffmpeg"), \
+        with mock.patch.object(self.combine_mod, "ffmpeg_path", "/usr/bin/ffmpeg"), \
              mock.patch.object(
-                 self.nodes_mod,
+                 self.combine_mod,
                  "apply_format_widgets",
                  lambda _ext, _kwargs: {"extension": "mp4", "main_pass": [], "audio_pass": ["-c:a", "aac"]},
              ), \
-             mock.patch.object(self.nodes_mod, "ffmpeg_process", fake_ffmpeg_process):
+             mock.patch.object(self.combine_mod, "ffmpeg_process", fake_ffmpeg_process):
             with self.assertRaisesRegex(RuntimeError, "lazy audio extraction failed"):
                 combine.combine_video(
                     images=images,
@@ -434,9 +504,9 @@ class NodesReliabilityTests(unittest.TestCase):
             Path(file_path).write_bytes(b"video")
             yield total
 
-        with mock.patch.object(self.nodes_mod, "ffmpeg_path", "/usr/bin/ffmpeg"), \
+        with mock.patch.object(self.combine_mod, "ffmpeg_path", "/usr/bin/ffmpeg"), \
              mock.patch.object(
-                 self.nodes_mod,
+                 self.combine_mod,
                  "apply_format_widgets",
                  lambda _ext, _kwargs: {
                      "extension": "mp4",
@@ -444,7 +514,7 @@ class NodesReliabilityTests(unittest.TestCase):
                      "save_metadata": "False",
                  },
              ), \
-             mock.patch.object(self.nodes_mod, "ffmpeg_process", fake_ffmpeg_process):
+             mock.patch.object(self.combine_mod, "ffmpeg_process", fake_ffmpeg_process):
             result = combine.combine_video(
                 images=images,
                 frame_rate=8,
@@ -490,9 +560,9 @@ class NodesReliabilityTests(unittest.TestCase):
             Path(file_path).write_bytes(b"video")
             yield total
 
-        with mock.patch.object(self.nodes_mod, "ffmpeg_path", "/usr/bin/ffmpeg"), \
+        with mock.patch.object(self.combine_mod, "ffmpeg_path", "/usr/bin/ffmpeg"), \
              mock.patch.object(
-                 self.nodes_mod,
+                 self.combine_mod,
                  "apply_format_widgets",
                  lambda _ext, _kwargs: {
                      "extension": "mp4",
@@ -500,7 +570,7 @@ class NodesReliabilityTests(unittest.TestCase):
                      "save_metadata": "True",
                  },
              ), \
-             mock.patch.object(self.nodes_mod, "ffmpeg_process", fake_ffmpeg_process):
+             mock.patch.object(self.combine_mod, "ffmpeg_process", fake_ffmpeg_process):
             result = combine.combine_video(
                 images=images,
                 frame_rate=8,
@@ -538,13 +608,13 @@ class NodesReliabilityTests(unittest.TestCase):
             Path(file_path).write_bytes(b"video")
             yield total
 
-        with mock.patch.object(self.nodes_mod, "ffmpeg_path", "/usr/bin/ffmpeg"), \
+        with mock.patch.object(self.combine_mod, "ffmpeg_path", "/usr/bin/ffmpeg"), \
              mock.patch.object(
-                 self.nodes_mod,
+                 self.combine_mod,
                  "apply_format_widgets",
                  lambda _ext, _kwargs: {"extension": "mp4", "main_pass": []},
              ), \
-             mock.patch.object(self.nodes_mod, "ffmpeg_process", fake_ffmpeg_process):
+             mock.patch.object(self.combine_mod, "ffmpeg_process", fake_ffmpeg_process):
             result = combine.combine_video(
                 images=images,
                 frame_rate=8,
@@ -572,13 +642,13 @@ class NodesReliabilityTests(unittest.TestCase):
                 frame_data = yield
             raise Exception("encode failed")
 
-        with mock.patch.object(self.nodes_mod, "ffmpeg_path", "/usr/bin/ffmpeg"), \
+        with mock.patch.object(self.combine_mod, "ffmpeg_path", "/usr/bin/ffmpeg"), \
              mock.patch.object(
-                 self.nodes_mod,
+                 self.combine_mod,
                  "apply_format_widgets",
                  lambda _ext, _kwargs: {"extension": "mp4", "main_pass": []},
              ), \
-             mock.patch.object(self.nodes_mod, "ffmpeg_process", failing_ffmpeg_process):
+             mock.patch.object(self.combine_mod, "ffmpeg_process", failing_ffmpeg_process):
             with self.assertRaisesRegex(Exception, "encode failed"):
                 combine.combine_video(
                     images=images,
@@ -622,13 +692,13 @@ class NodesReliabilityTests(unittest.TestCase):
                 Path(str(file_path).replace("%03d", f"{frame_index:03d}")).write_bytes(b"frame")
             yield total
 
-        with mock.patch.object(self.nodes_mod, "ffmpeg_path", "/usr/bin/ffmpeg"), \
+        with mock.patch.object(self.combine_mod, "ffmpeg_path", "/usr/bin/ffmpeg"), \
              mock.patch.object(
-                 self.nodes_mod,
+                 self.combine_mod,
                  "apply_format_widgets",
                  lambda _ext, _kwargs: {"extension": "%03d.png", "main_pass": []},
              ), \
-             mock.patch.object(self.nodes_mod, "ffmpeg_process", fake_ffmpeg_process):
+             mock.patch.object(self.combine_mod, "ffmpeg_process", fake_ffmpeg_process):
             result = combine.combine_video(
                 images=images,
                 frame_rate=8,
@@ -724,28 +794,30 @@ class NodesReliabilityTests(unittest.TestCase):
 
         def fake_subprocess_run(args, input=None, env=None, capture_output=None, check=None):
             Path(args[-1]).write_bytes(b"muxed-video")
-            return types.SimpleNamespace(stderr=b"")
+            return types.SimpleNamespace(stderr=b"mux warning")
 
         audio = {"waveform": _FakeWaveform(), "sample_rate": 44100}
 
-        with mock.patch.object(self.nodes_mod, "ffmpeg_path", "/usr/bin/ffmpeg"), \
+        with mock.patch.object(self.combine_mod, "ffmpeg_path", "/usr/bin/ffmpeg"), \
              mock.patch.object(
-                 self.nodes_mod,
+                 self.combine_mod,
                  "apply_format_widgets",
                  lambda _ext, _kwargs: {"extension": "mp4", "main_pass": [], "audio_pass": ["-c:a", "aac"]},
              ), \
-             mock.patch.object(self.nodes_mod, "ffmpeg_process", fake_ffmpeg_process), \
-             mock.patch.object(self.nodes_mod.subprocess, "run", side_effect=fake_subprocess_run):
-            result = combine.combine_video(
-                images=images,
-                frame_rate=8,
-                loop_count=0,
-                filename_prefix="Test",
-                format="video/fake-format",
-                save_output=True,
-                audio=audio,
-                extra_pnginfo={"workflow": {"extra": {"VHS_MetadataImage": True}}},
-            )
+             mock.patch.object(self.combine_mod, "ffmpeg_process", fake_ffmpeg_process), \
+             mock.patch.object(self.combine_mod.subprocess, "run", side_effect=fake_subprocess_run):
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                result = combine.combine_video(
+                    images=images,
+                    frame_rate=8,
+                    loop_count=0,
+                    filename_prefix="Test",
+                    format="video/fake-format",
+                    save_output=True,
+                    audio=audio,
+                    extra_pnginfo={"workflow": {"extra": {"VHS_MetadataImage": True}}},
+                )
 
         output_files = result["result"][0][1]
         self.assertEqual(len(output_files), 2)
@@ -753,6 +825,7 @@ class NodesReliabilityTests(unittest.TestCase):
         self.assertTrue(output_files[1].endswith("-audio.mp4"))
         self.assertTrue(os.path.exists(output_files[1]))
         self.assertFalse(os.path.exists(output_files[1].replace("-audio.mp4", ".mp4")))
+        self.assertIn("mux warning", stderr.getvalue())
 
 
 if __name__ == "__main__":
