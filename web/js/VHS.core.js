@@ -1,8 +1,8 @@
 import { app } from '../../../scripts/app.js'
 import { api } from '../../../scripts/api.js'
-import { setWidgetConfig } from '../../../extensions/core/widgetInputs.js'
-import { applyTextReplacements } from "../../../scripts/utils.js";
 import { shouldUseAdvancedPreview } from "./previewRouting.js";
+import { reconcileFormatWidgets } from "./formatWidgetState.js";
+import { applyTextReplacements } from "./textReplacements.js";
 
 function chainCallback(object, property, callback) {
     if (object == undefined) {
@@ -98,10 +98,6 @@ function useKVState(nodeType) {
             if (widgetDict.videopreview?.params?.force_size) {
                 delete widgetDict.videopreview.params.force_size
             }
-            let inputs = {}
-            for (let i of this.inputs) {
-                inputs[i.name] = i
-            }
             if (widgetDict.length == undefined) {
                 for (let w of this.widgets) {
                     if (w.type =="button") {
@@ -139,9 +135,6 @@ function useKVState(nodeType) {
                             w.value = initialValue;
                             w.callback?.(w.value)
                         }
-                    }
-                    if (w.name in inputs && w.config) {
-                        setWidgetConfig(inputs[w.name], w.config)
                     }
                 }
             } else {
@@ -872,7 +865,7 @@ function addDateFormatting(nodeType, field, timestamp_widget = false) {
     chainCallback(nodeType.prototype, "onNodeCreated", function() {
         const widget = this.widgets.find((w) => w.name === field);
         widget.serializeValue = () => {
-            return applyTextReplacements(app, widget.value);
+            return applyTextReplacements(app.rootGraph ?? app.graph, widget.value);
         };
     });
 }
@@ -1496,60 +1489,15 @@ function addPreviewOptions(nodeType) {
 }
 function addFormatWidgets(nodeType, nodeData) {
     chainCallback(nodeType.prototype, "onNodeCreated", function() {
-        var formatWidget = null;
-        var formatWidgetIndex = -1;
-        for(let i = 0; i < this.widgets.length; i++) {
-            if (this.widgets[i].name === "format"){
-                formatWidget = this.widgets[i];
-                formatWidgetIndex = i+1;
-                break
-            }
-        }
-        let formatWidgetsCount = 0;
+        const formatWidget = this.widgets.find((widget) => widget.name === "format")
+        const formats = nodeData?.input?.required?.format?.[1]?.formats ?? {}
+        const formatState = {}
         chainCallback(formatWidget, "callback", (value) => {
-            const formats = (LiteGraph.registered_node_types[this.type]
-                ?.nodeData?.input?.required?.format?.[1]?.formats)
-            let newWidgets = [];
-            if (formats?.[value]) {
-                let formatWidgets = formats[value]
-                for (let wDef of formatWidgets) {
-                    let type = wDef[2]?.widgetType ?? wDef[1]
-                    if (Array.isArray(type)) {
-                        type = "COMBO"
-                    }
-                    app.widgets[type](this, wDef[0], wDef.slice(1), app)
-                    let w = this.widgets.pop()
-                    w.config = wDef.slice(1)
-                    newWidgets.push(w)
-                }
-            }
-            let removed = this.widgets.splice(formatWidgetIndex,
-                                            formatWidgetsCount, ...newWidgets);
-            let newNames = new Set(newWidgets.map((w) => w.name))
-            for (let w of removed) {
-                w?.onRemove?.()
-                if (w.name in newNames) {
-                    continue
-                }
-                //I do not like the performance of this, but it's safe
-                let slot = this.inputs.findIndex((i) => i.name == w.name)
-                if (slot >= 0) {
-                    this.removeInput(slot)
-                }
-            }
-            for (let w of newWidgets) {
-                let existingInput = this.inputs.find((i) => i.name == w.name)
-                if (existingInput) {
-                    setWidgetConfig(existingInput, w.config)
-                    //TODO: Consider forcing disconnection if props change?
-                } else {
-                    //NOTE: config is applied in wrapped addInput call
-                    this.addInput(w.name, w.config[0], {widget: {name: w.name}})
-                }
-            }
+            formatWidget.value = value
+            reconcileFormatWidgets(this, formatWidget, formats, app, formatState)
             fitHeight(this);
-            formatWidgetsCount = newWidgets.length;
         });
+        formatWidget.callback?.(formatWidget.value)
     });
 }
 function addLoadCommon(nodeType, nodeData) {
@@ -2197,22 +2145,6 @@ app.registerExtension({
                         }
                     }
                     this.widgets = new_widgets;
-                }
-                const originalAddInput = this.addInput;
-                this.addInput = function(name, type, options) {
-                    if (options.widget) {
-                        //Is Converted Widget
-                        const widget = this.widgets.find((w) => w.name == name)
-                        if (widget?.config) {
-                            //Has override for type
-                            type = widget.config[0]
-                            if (type == 'FLOAT') {
-                                type = "FLOAT,INT"
-                            }
-                            setWidgetConfig(options, widget.config)
-                        }
-                    }
-                    return originalAddInput.apply(this, [name, type, options])
                 }
             });
         }

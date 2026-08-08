@@ -13,6 +13,7 @@ from pathlib import Path
 from string import Template
 import itertools
 import functools
+from copy import deepcopy
 
 import folder_paths
 from .logger import logger
@@ -67,9 +68,9 @@ base_formats_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 @cached(5)
 def get_video_formats():
     format_files = {}
-    for format_name in folder_paths.get_filename_list("VHS_video_formats"):
+    for format_name in sorted(folder_paths.get_filename_list("VHS_video_formats")):
         format_files[format_name] = folder_paths.get_full_path("VHS_video_formats", format_name)
-    for item in os.scandir(base_formats_dir):
+    for item in sorted(os.scandir(base_formats_dir), key=lambda entry: entry.name):
         if not item.is_file() or not item.name.endswith('.json'):
             continue
         format_files[item.name[:-5]] = item.path
@@ -86,6 +87,78 @@ def get_video_formats():
         if (len(widgets) > 0):
             format_widgets["video/"+ format_name] = widgets
     return formats, format_widgets
+
+def _format_widget_kind(widget_definition):
+    widget_type = widget_definition[1]
+    return "COMBO" if isinstance(widget_type, list) else widget_type
+
+def _merge_format_widget_options(definitions):
+    option_sets = [
+        definition[2] if len(definition) > 2 and isinstance(definition[2], dict) else {}
+        for definition in definitions
+    ]
+    merged = deepcopy(option_sets[0]) if option_sets else {}
+
+    for bound, reducer in (("min", min), ("max", max)):
+        values = [options[bound] for options in option_sets if bound in options]
+        if len(values) == len(option_sets) and values:
+            merged[bound] = reducer(values)
+        else:
+            merged.pop(bound, None)
+
+    steps = [options.get("step") for options in option_sets]
+    if steps and all(step == steps[0] for step in steps) and steps[0] is not None:
+        merged["step"] = steps[0]
+    elif any(step is not None for step in steps):
+        numeric_steps = [step for step in steps if isinstance(step, (int, float))]
+        if numeric_steps:
+            merged["step"] = min(numeric_steps)
+        else:
+            merged.pop("step", None)
+
+    # Only retain non-constraint options that mean the same thing for every format.
+    for key in list(merged):
+        if key in {"default", "min", "max", "step"}:
+            continue
+        if not all(key in options and options[key] == merged[key] for options in option_sets):
+            merged.pop(key, None)
+    return merged
+
+def build_format_widget_inputs(format_widgets):
+    """Build stable public input specs for compatible format widget names."""
+    definitions_by_name = {}
+    for definitions in format_widgets.values():
+        for definition in definitions:
+            if not isinstance(definition, list) or len(definition) < 2:
+                continue
+            definitions_by_name.setdefault(definition[0], []).append(definition)
+
+    inputs = {}
+    incompatible = {}
+    for name, definitions in definitions_by_name.items():
+        kinds = list(dict.fromkeys(_format_widget_kind(definition) for definition in definitions))
+        if len(kinds) != 1:
+            incompatible[name] = kinds
+            continue
+
+        kind = kinds[0]
+        options = _merge_format_widget_options(definitions)
+        if kind == "COMBO":
+            choices = []
+            for definition in definitions:
+                for choice in definition[1]:
+                    if choice not in choices:
+                        choices.append(choice)
+            if not choices:
+                incompatible[name] = ["EMPTY_COMBO"]
+                continue
+            if options.get("default") not in choices:
+                options["default"] = choices[0]
+            inputs[name] = (choices, options)
+        else:
+            inputs[name] = (kind, options)
+
+    return inputs, incompatible
 
 def apply_format_widgets(format_name, kwargs):
     if os.path.exists(os.path.join(base_formats_dir, format_name + ".json")):
@@ -476,6 +549,29 @@ class VideoCombine:
     def INPUT_TYPES(s):
         ffmpeg_formats, format_widgets = get_video_formats()
         format_widgets["image/webp"] = [['lossless', "BOOLEAN", {'default': True}]]
+        format_widget_inputs, incompatible_widgets = build_format_widget_inputs(format_widgets)
+        if incompatible_widgets:
+            logger.warn(
+                "Format widgets with incompatible same-name types will use "
+                f"widget-only frontend fallbacks: {sorted(incompatible_widgets)}"
+            )
+        optional_inputs = {
+            "audio": ("AUDIO",),
+            "meta_batch": ("VHS_BatchManager",),
+            "vae": ("VAE",),
+        }
+        reserved_names = {
+            "images", "frame_rate", "loop_count", "filename_prefix",
+            "format", "pingpong", "save_output", *optional_inputs,
+        }
+        for name, config in format_widget_inputs.items():
+            if name in reserved_names:
+                logger.warn(
+                    f"Format widget {name!r} conflicts with a VideoCombine input and "
+                    "will use a widget-only frontend fallback"
+                )
+                continue
+            optional_inputs[name] = config
         return {
             "required": {
                 "images": (imageOrLatent,),
@@ -489,11 +585,7 @@ class VideoCombine:
                 "pingpong": ("BOOLEAN", {"default": False}),
                 "save_output": ("BOOLEAN", {"default": True}),
             },
-            "optional": {
-                "audio": ("AUDIO",),
-                "meta_batch": ("VHS_BatchManager",),
-                "vae": ("VAE",),
-            },
+            "optional": optional_inputs,
             "hidden": ContainsAll({
                 "prompt": "PROMPT",
                 "extra_pnginfo": "EXTRA_PNGINFO",
