@@ -1,12 +1,16 @@
 [project]
 name = "comfyui-videohelper-adv"
-description = "Nodes related to video workflows"
+description = "Hardened video workflow nodes for ComfyUI with safer output, metadata, and path handling"
 version = "2.0.0"
 license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.10"
 dependencies = ["opencv-python", "imageio-ffmpeg", "av", "psutil"]
 
 [project.urls]
 Repository = "https://github.com/rookiestar28/ComfyUI-VideoHelper-Adv"
+Documentation = "https://github.com/rookiestar28/ComfyUI-VideoHelper-Adv#readme"
+"Bug Tracker" = "https://github.com/rookiestar28/ComfyUI-VideoHelper-Adv/issues"
 
 #  Used by Comfy Registry https://comfyregistry.org
 [tool.comfy]

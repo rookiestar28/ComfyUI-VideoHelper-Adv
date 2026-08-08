@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Run authenticated preflight only, or publish after all gates pass
+        description: Run authenticated preflight only, or publish an approved version tag
         required: true
         type: choice
         options:
@@ -17,10 +17,15 @@ on:
         type: string
         default: "2.0.0"
       confirmation:
-        description: For publish, enter PUBLISH comfyui-videohelper-adv 2.0.0
+        description: For manual publish, enter PUBLISH comfyui-videohelper-adv 2.0.0
         required: false
         type: string
         default: ""
+  push:
+    branches:
+      - main
+    paths:
+      - "pyproject.toml"
 
 permissions:
   contents: read
@@ -32,16 +37,17 @@ concurrency:
 jobs:
   validate-package:
     name: Validate exact Registry package
+    if: ${{ github.repository_owner == 'rookiestar28' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      RELEASE_CONFIRMATION: ${{ inputs.confirmation }}
-      RELEASE_OPERATION: ${{ inputs.operation }}
-      RELEASE_VERSION: ${{ inputs.version }}
+    outputs:
+      should_publish: ${{ (github.event_name == 'push' && steps.publish_guard.outputs.should_publish) || (github.event_name == 'workflow_dispatch' && inputs.operation == 'publish') }}
+      current_version: ${{ github.event_name == 'push' && steps.publish_guard.outputs.current_version || inputs.version }}
     steps:
-      - name: Check out source
+      - name: Check out source with push baseline
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Python
@@ -49,15 +55,38 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Require the version tag for publish operation
-        if: inputs.operation == 'publish'
+      - name: Evaluate pushed version change
+        id: publish_guard
+        if: github.event_name == 'push'
         shell: bash
         env:
-          EXPECTED_PUBLISH_REF: refs/tags/v${{ inputs.version }}
-        run: test "$GITHUB_REF" = "$EXPECTED_PUBLISH_REF"
+          PREVIOUS_REF: ${{ github.event.before }}
+        run: >-
+          python scripts/registry_publish_guard.py
+          --pyproject pyproject.toml
+          --previous-ref "$PREVIOUS_REF"
+          --github-output "$GITHUB_OUTPUT"
 
-      - name: Validate metadata, ref, confirmation, and exact archive
+      - name: Validate automatic push metadata and exact archive
+        if: github.event_name == 'push'
         shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.publish_guard.outputs.current_version }}
+        run: >-
+          python scripts/validate_release_metadata.py
+          --expected-version "$RELEASE_VERSION"
+          --operation preflight
+          --github-ref "$GITHUB_REF"
+          --dry-run
+          --archive "$RUNNER_TEMP/comfyui-videohelper-adv.zip"
+
+      - name: Validate manual operation metadata and exact archive
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          RELEASE_CONFIRMATION: ${{ inputs.confirmation }}
+          RELEASE_OPERATION: ${{ inputs.operation }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: >-
           python scripts/validate_release_metadata.py
           --expected-version "$RELEASE_VERSION"
@@ -66,6 +95,13 @@ jobs:
           --github-ref "$GITHUB_REF"
           --dry-run
           --archive "$RUNNER_TEMP/comfyui-videohelper-adv.zip"
+
+      - name: Require version tag for manual publish
+        if: github.event_name == 'workflow_dispatch' && inputs.operation == 'publish'
+        shell: bash
+        env:
+          EXPECTED_PUBLISH_REF: refs/tags/v${{ inputs.version }}
+        run: test "$GITHUB_REF" = "$EXPECTED_PUBLISH_REF"
 
       - name: Inspect exact archive independently
         shell: bash
@@ -74,19 +110,16 @@ jobs:
           "$RUNNER_TEMP/comfyui-videohelper-adv.zip"
 
   publish-node:
-    name: Protected Registry preflight and optional publish
+    name: Publish approved version
     needs: validate-package
+    if: ${{ needs.validate-package.outputs.should_publish == 'true' && github.repository_owner == 'rookiestar28' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: comfy-registry-release
-    env:
-      RELEASE_CONFIRMATION: ${{ inputs.confirmation }}
-      RELEASE_OPERATION: ${{ inputs.operation }}
-      RELEASE_VERSION: ${{ inputs.version }}
     steps:
-      - name: Check out source
+      - name: Check out validated source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Python
@@ -94,51 +127,59 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Require the version tag for publish operation
-        if: inputs.operation == 'publish'
+      - name: Revalidate automatic push package
+        if: github.event_name == 'push'
         shell: bash
         env:
-          EXPECTED_PUBLISH_REF: refs/tags/v${{ inputs.version }}
-        run: test "$GITHUB_REF" = "$EXPECTED_PUBLISH_REF"
-
-      - name: Revalidate immutable release inputs before secret use
-        shell: bash
+          RELEASE_VERSION: ${{ needs.validate-package.outputs.current_version }}
         run: >-
           python scripts/validate_release_metadata.py
           --expected-version "$RELEASE_VERSION"
-          --operation "$RELEASE_OPERATION"
+          --operation preflight
+          --github-ref "$GITHUB_REF"
+          --dry-run
+          --archive "$RUNNER_TEMP/comfyui-videohelper-adv.zip"
+
+      - name: Revalidate manual publish package
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          RELEASE_CONFIRMATION: ${{ inputs.confirmation }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: >-
+          python scripts/validate_release_metadata.py
+          --expected-version "$RELEASE_VERSION"
+          --operation publish
           --confirmation "$RELEASE_CONFIRMATION"
           --github-ref "$GITHUB_REF"
           --dry-run
           --archive "$RUNNER_TEMP/comfyui-videohelper-adv.zip"
 
-      - name: Verify protected environment bootstrap marker
+      - name: Inspect release package independently
         shell: bash
-        env:
-          RELEASE_ENVIRONMENT_PROTECTED: ${{ vars.RELEASE_ENVIRONMENT_PROTECTED }}
-        run: test "$RELEASE_ENVIRONMENT_PROTECTED" = "true"
+        run: >-
+          python scripts/inspect_release_archive.py
+          "$RUNNER_TEMP/comfyui-videohelper-adv.zip"
 
       - name: Authenticated read-only Registry ownership preflight
         shell: bash
         env:
-          REGISTRY_ACCESS_TOKEN: ${{ secrets.COMFY_REGISTRY_RELEASE_TOKEN }}
+          REGISTRY_ACCESS_TOKEN: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
         run: >-
           python scripts/registry_preflight.py
           --publisher rookiestar
           --node comfyui-videohelper-adv
 
       - name: Install reviewed Comfy CLI release
-        if: inputs.operation == 'publish'
         shell: bash
         run: python -m pip install --disable-pip-version-check "comfy-cli==1.12.0"
 
-      - name: Publish approved tag to Comfy Registry
-        if: inputs.operation == 'publish'
+      - name: Publish approved version to Comfy Registry
         shell: bash
         env:
           COMFY_NO_TELEMETRY: "1"
           DO_NOT_TRACK: "1"
-          REGISTRY_ACCESS_TOKEN: ${{ secrets.COMFY_REGISTRY_RELEASE_TOKEN }}
+          REGISTRY_ACCESS_TOKEN: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
         run: >-
           comfy --skip-prompt --no-enable-telemetry env comfy node publish
           --token "$REGISTRY_ACCESS_TOKEN"

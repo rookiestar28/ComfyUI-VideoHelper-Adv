@@ -9,6 +9,11 @@ from pathlib import Path
 
 import yaml
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 CI lane.
+    import tomli as tomllib
+
 from scripts.release_guardrails import (
     APPROVED_DISPLAY_NAME,
     APPROVED_NODE_ID,
@@ -38,6 +43,28 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertEqual(metadata.display_name, APPROVED_DISPLAY_NAME)
         self.assertEqual(metadata.repository, APPROVED_REPOSITORY)
         validate_release_metadata(REPO_ROOT)
+
+    def test_public_package_metadata_and_requirements_are_complete(self):
+        metadata = tomllib.loads(
+            (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        )
+        project = metadata["project"]
+        self.assertEqual(project["readme"], "README.md")
+        self.assertEqual(project["requires-python"], ">=3.10")
+        self.assertEqual(
+            project["urls"],
+            {
+                "Repository": APPROVED_REPOSITORY,
+                "Documentation": f"{APPROVED_REPOSITORY}#readme",
+                "Bug Tracker": f"{APPROVED_REPOSITORY}/issues",
+            },
+        )
+        requirements = {
+            line.strip()
+            for line in (REPO_ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        self.assertEqual(set(project["dependencies"]), requirements)
 
     def test_invalid_semver_or_identity_is_rejected(self):
         with tempfile.TemporaryDirectory() as root_text:
@@ -76,6 +103,8 @@ class ReleaseArchiveTests(unittest.TestCase):
                 names = set(archive.namelist())
             for required in (
                 "__init__.py",
+                "LICENSE",
+                "README.md",
                 "pyproject.toml",
                 "requirements.txt",
                 "videohelpersuite/nodes.py",
@@ -218,8 +247,10 @@ class PublishWorkflowPolicyTests(unittest.TestCase):
         cls.workflow = yaml.safe_load(cls.raw)
         cls.triggers = cls.workflow.get("on", cls.workflow.get(True))
 
-    def test_manual_only_least_privilege_jobs(self):
-        self.assertEqual(set(self.triggers), {"workflow_dispatch"})
+    def test_automatic_version_push_and_manual_preflight_are_least_privilege(self):
+        self.assertEqual(set(self.triggers), {"workflow_dispatch", "push"})
+        self.assertEqual(self.triggers["push"]["branches"], ["main"])
+        self.assertEqual(self.triggers["push"]["paths"], ["pyproject.toml"])
         self.assertEqual(self.workflow["permissions"], {"contents": "read"})
         self.assertEqual(set(self.workflow["jobs"]), {"validate-package", "publish-node"})
         validate = self.workflow["jobs"]["validate-package"]
@@ -227,7 +258,9 @@ class PublishWorkflowPolicyTests(unittest.TestCase):
         self.assertNotIn("environment", validate)
         self.assertNotIn("secrets.", json.dumps(validate))
         self.assertEqual(publish["needs"], "validate-package")
-        self.assertEqual(publish["environment"], "comfy-registry-release")
+        self.assertNotIn("environment", publish)
+        self.assertIn("github.repository_owner == 'rookiestar28'", validate["if"])
+        self.assertIn("needs.validate-package.outputs.should_publish == 'true'", publish["if"])
 
     def test_actions_are_sha_pinned_and_checkout_drops_credentials(self):
         action_steps = [
@@ -248,19 +281,42 @@ class PublishWorkflowPolicyTests(unittest.TestCase):
         self.assertIn(APPROVED_NODE_ID, lowered)
         self.assertIn(APPROVED_PUBLISHER_ID, lowered)
         self.assertIn("registry_access_token", lowered)
-        self.assertNotIn("secrets.registry_access_token", lowered)
-        self.assertEqual(lowered.count("secrets.comfy_registry_release_token"), 2)
-        self.assertIn("release_environment_protected", lowered)
+        self.assertEqual(lowered.count("secrets.registry_access_token"), 2)
+        self.assertNotIn("comfy_registry_release_token", lowered)
+        self.assertNotIn("release_environment_protected", lowered)
         self.assertIn("refs/tags/v", lowered)
         self.assertIn("publish ", lowered)
+        self.assertIn("github.event.before", lowered)
+        self.assertIn("comfy-cli==1.12.0", lowered)
+        self.assertIn("scripts/registry_publish_guard.py", lowered)
         run_source = "\n".join(
             step.get("run", "")
             for job in self.workflow["jobs"].values()
             for step in job["steps"]
         )
         self.assertNotIn("${{ github.event", run_source)
-        self.assertNotIn("push:", lowered)
         self.assertNotIn("pull_request:", lowered)
+
+    def test_archive_and_owner_preflight_gate_publish_command(self):
+        validate_steps = self.workflow["jobs"]["validate-package"]["steps"]
+        publish_steps = self.workflow["jobs"]["publish-node"]["steps"]
+        validate_names = [step["name"] for step in validate_steps]
+        publish_names = [step["name"] for step in publish_steps]
+        self.assertLess(
+            validate_names.index("Evaluate pushed version change"),
+            validate_names.index("Validate automatic push metadata and exact archive"),
+        )
+        self.assertLess(
+            publish_names.index("Authenticated read-only Registry ownership preflight"),
+            publish_names.index("Publish approved version to Comfy Registry"),
+        )
+        publish_command = next(
+            step["run"]
+            for step in publish_steps
+            if step["name"] == "Publish approved version to Comfy Registry"
+        )
+        self.assertIn("comfy node publish", publish_command)
+        self.assertNotIn("Comfy-Org/publish-node-action", self.raw)
 
 
 class ReleaseCliTests(unittest.TestCase):
