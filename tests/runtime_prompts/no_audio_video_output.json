@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "scenario_id": "no_audio_video_output",
+  "expected_outcome": "success",
+  "assertions": ["final_video", "preview_payload", "video_only_stream", "filename_dimensions"],
+  "prompt": {
+    "1": {"class_type": "EmptyImage", "inputs": {"width": 64, "height": 48, "batch_size": 4, "color": 1122867}},
+    "2": {"class_type": "VHS_VideoCombine", "inputs": {"images": ["1", 0], "frame_rate": 8, "loop_count": 0, "filename_prefix": "runtime/no_audio_video_output/clip_%width%x%height%", "format": "video/h264-mp4", "pingpong": false, "save_output": true, "save_metadata": true}}
+  }
+}

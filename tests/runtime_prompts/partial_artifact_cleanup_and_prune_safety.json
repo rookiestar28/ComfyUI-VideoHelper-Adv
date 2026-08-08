@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "scenario_id": "partial_artifact_cleanup_and_prune_safety",
+  "expected_outcome": "failure",
+  "assertions": ["partial_artifacts_removed", "outside_prune_rejected_before_delete"],
+  "runtime_control": {"fault_injection": "terminate_encoder_after_output_start", "outside_prune_sentinel": "workspace_sentinel"},
+  "prompt": {
+    "1": {"class_type": "EmptyImage", "inputs": {"width": 64, "height": 48, "batch_size": 8, "color": 8947848}},
+    "2": {"class_type": "VHS_VideoCombine", "inputs": {"images": ["1", 0], "frame_rate": 8, "loop_count": 0, "filename_prefix": "runtime/partial_artifact_cleanup_and_prune_safety/clip", "format": "video/h264-mp4", "pingpong": false, "save_output": true, "save_metadata": true}}
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "scenario_id": "audio_connected_output",
+  "expected_outcome": "success",
+  "assertions": ["muxed_final", "audio_stream", "silent_intermediate_hidden", "metadata_preserved"],
+  "prompt": {
+    "1": {"class_type": "EmptyImage", "inputs": {"width": 64, "height": 48, "batch_size": 4, "color": 2245734}},
+    "2": {"class_type": "EmptyAudio", "inputs": {"duration": 0.5, "sample_rate": 44100, "channels": 2}},
+    "3": {"class_type": "VHS_VideoCombine", "inputs": {"images": ["1", 0], "audio": ["2", 0], "frame_rate": 8, "loop_count": 0, "filename_prefix": "runtime/audio_connected_output/clip", "format": "video/h264-mp4", "pingpong": false, "save_output": true, "save_metadata": true}}
+  }
+}

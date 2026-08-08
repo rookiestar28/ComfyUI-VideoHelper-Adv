@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "scenario_id": "metadata_disabled_utility_png",
+  "expected_outcome": "success",
+  "assertions": ["utility_png_has_no_workflow_text", "video_has_no_workflow_metadata"],
+  "prompt": {
+    "1": {"class_type": "EmptyImage", "inputs": {"width": 64, "height": 48, "batch_size": 2, "color": 5614335}},
+    "2": {"class_type": "VHS_VideoCombine", "inputs": {"images": ["1", 0], "frame_rate": 8, "loop_count": 0, "filename_prefix": "runtime/metadata_disabled_utility_png/clip", "format": "video/h264-mp4", "pingpong": false, "save_output": true, "save_metadata": false}}
+  }
+}

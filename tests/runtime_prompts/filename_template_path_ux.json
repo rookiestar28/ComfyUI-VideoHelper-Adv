@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "scenario_id": "filename_template_path_ux",
+  "expected_outcome": "success",
+  "assertions": ["filename_contains_64x48", "outside_prefix_rejected", "cross_drive_prefix_rejected"],
+  "runtime_control": {"negative_prefixes": ["../outside/clip", "cross_drive_sentinel"]},
+  "prompt": {
+    "1": {"class_type": "EmptyImage", "inputs": {"width": 64, "height": 48, "batch_size": 2, "color": 7860069}},
+    "2": {"class_type": "VHS_VideoCombine", "inputs": {"images": ["1", 0], "frame_rate": 8, "loop_count": 0, "filename_prefix": "runtime/filename_template_path_ux/clip_%width%x%height%", "format": "video/h264-mp4", "pingpong": false, "save_output": true, "save_metadata": true}}
+  }
+}

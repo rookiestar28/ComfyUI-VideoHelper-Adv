@@ -1,0 +1,78 @@
+{
+  "last_node_id": 3,
+  "last_link_id": 2,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "EmptyImage",
+      "pos": [60, 100],
+      "size": [260, 130],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [1], "slot_index": 0}],
+      "properties": {"Node name for S&R": "EmptyImage"},
+      "widgets_values": [64, 48, 4, 2245734],
+      "widgets_values_named": {"width": 64, "height": 48, "batch_size": 4, "color": 2245734}
+    },
+    {
+      "id": 2,
+      "type": "EmptyAudio",
+      "pos": [60, 300],
+      "size": [260, 110],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "AUDIO", "type": "AUDIO", "links": [2], "slot_index": 0}],
+      "properties": {"Node name for S&R": "EmptyAudio"},
+      "widgets_values": [0.5, 44100, 2],
+      "widgets_values_named": {"duration": 0.5, "sample_rate": 44100, "channels": 2}
+    },
+    {
+      "id": 3,
+      "type": "VHS_VideoCombine",
+      "pos": [460, 160],
+      "size": [330, 320],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {"name": "images", "type": "IMAGE", "link": 1},
+        {"name": "audio", "type": "AUDIO", "link": 2}
+      ],
+      "outputs": [{"name": "Filenames", "type": "VHS_FILENAMES", "links": null, "slot_index": 0}],
+      "properties": {"Node name for S&R": "VHS_VideoCombine"},
+      "widgets_values": {
+        "frame_rate": 8,
+        "loop_count": 0,
+        "filename_prefix": "runtime/audio_connected_output/clip",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 19,
+        "save_metadata": true,
+        "trim_to_audio": false,
+        "pingpong": false,
+        "save_output": true
+      },
+      "widgets_values_named": {
+        "frame_rate": 8,
+        "loop_count": 0,
+        "filename_prefix": "runtime/audio_connected_output/clip",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 19,
+        "save_metadata": true,
+        "trim_to_audio": false,
+        "pingpong": false,
+        "save_output": true
+      }
+    }
+  ],
+  "links": [[1, 1, 0, 3, 0, "IMAGE"], [2, 2, 0, 3, 1, "AUDIO"]],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}

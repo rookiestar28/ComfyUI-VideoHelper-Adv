@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "scenario_id": "image_sequence_output_and_prune",
+  "expected_outcome": "success",
+  "assertions": ["concrete_frame_paths", "frame_001_preview", "prune_all_removes_frames", "prune_intermediate_keeps_frames"],
+  "runtime_control": {"prune_options": ["Intermediate and Utility", "All"]},
+  "prompt": {
+    "1": {"class_type": "EmptyImage", "inputs": {"width": 64, "height": 48, "batch_size": 3, "color": 6737202}},
+    "2": {"class_type": "VHS_VideoCombine", "inputs": {"images": ["1", 0], "frame_rate": 8, "loop_count": 0, "filename_prefix": "runtime/image_sequence_output_and_prune/sequence", "format": "video/8bit-png", "pingpong": false, "save_output": true}}
+  }
+}

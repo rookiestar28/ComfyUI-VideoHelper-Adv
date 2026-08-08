@@ -191,6 +191,7 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 playwright-report/
+output/playwright/
 test-results/
 coverage/
 
