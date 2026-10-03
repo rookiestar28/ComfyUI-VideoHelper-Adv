@@ -238,6 +238,15 @@ class PublishWorkflowPolicyTests(unittest.TestCase):
         cls.workflow = yaml.safe_load(cls.raw)
         cls.triggers = cls.workflow.get("on", cls.workflow.get(True))
 
+    def test_manual_dispatch_defaults_match_current_release(self):
+        version = load_release_metadata(REPO_ROOT / "pyproject.toml").version
+        inputs = self.triggers["workflow_dispatch"]["inputs"]
+        self.assertEqual(inputs["version"]["default"], version)
+        self.assertIn(
+            f"PUBLISH {APPROVED_NODE_ID} {version}",
+            inputs["confirmation"]["description"],
+        )
+
     def test_automatic_version_push_and_manual_preflight_are_least_privilege(self):
         self.assertEqual(set(self.triggers), {"workflow_dispatch", "push"})
         self.assertEqual(self.triggers["push"]["branches"], ["main"])

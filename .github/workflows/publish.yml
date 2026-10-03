@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Run authenticated preflight only, or publish an approved version tag
+        description: Run authenticated preflight only, or publish an approved main commit
         required: true
         type: choice
         options:
@@ -15,14 +15,14 @@ on:
         description: Must exactly match pyproject.toml
         required: true
         type: string
-        default: "2.0.0"
+        default: "2.1.0"
       commit:
         description: For manual publish recovery, the exact 40-character main commit SHA
         required: false
         type: string
         default: ""
       confirmation:
-        description: For manual publish, enter PUBLISH comfyui-videohelper-adv 2.0.0
+        description: For manual publish, enter PUBLISH comfyui-videohelper-adv 2.1.0
         required: false
         type: string
         default: ""
