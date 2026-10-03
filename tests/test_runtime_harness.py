@@ -122,6 +122,38 @@ class TrustedHostTests(unittest.TestCase):
 
 
 class LaunchCommandTests(unittest.TestCase):
+    def test_frontend_override_is_explicit_and_contained(self):
+        with tempfile.TemporaryDirectory() as workspace_text, tempfile.TemporaryDirectory() as host_text:
+            workspace = Path(workspace_text)
+            layout = RuntimeLayout.create(workspace, workspace / ".tmp" / "runtime" / "frontend")
+            host = Path(host_text)
+            (host / "main.py").write_text("", encoding="utf-8")
+            interpreter = workspace / "python.exe"
+            interpreter.write_text("", encoding="utf-8")
+            trusted = validate_trusted_host(workspace, host, interpreter)
+            frontend = workspace / ".tmp" / "frontend"
+            frontend.mkdir()
+            (frontend / "index.html").write_text("<html></html>", encoding="utf-8")
+            command = build_comfyui_command(
+                trusted, layout, 18288, frontend_root=frontend, enable_assets=True,
+            )
+            self.assertEqual(command[command.index("--front-end-root") + 1], str(frontend.resolve()))
+            self.assertIn("--enable-assets", command)
+            self.assertEqual(command[command.index("--database-url") + 1], "sqlite:///:memory:")
+
+    def test_frontend_override_rejects_external_reference_and_missing_index(self):
+        with tempfile.TemporaryDirectory() as workspace_text, tempfile.TemporaryDirectory() as host_text:
+            workspace = Path(workspace_text)
+            layout = RuntimeLayout.create(workspace, workspace / ".tmp" / "runtime" / "frontend")
+            host = Path(host_text)
+            (host / "main.py").write_text("", encoding="utf-8")
+            interpreter = workspace / "python.exe"
+            interpreter.write_text("", encoding="utf-8")
+            trusted = validate_trusted_host(workspace, host, interpreter)
+            for frontend in (host, workspace / "reference" / "frontend", workspace / ".tmp" / "absent"):
+                with self.subTest(frontend=frontend.name), self.assertRaises(ContainmentError):
+                    build_comfyui_command(trusted, layout, 18288, frontend_root=frontend)
+
     def test_command_uses_only_loopback_and_all_contained_roots(self):
         with tempfile.TemporaryDirectory() as workspace_text, tempfile.TemporaryDirectory() as host_text:
             workspace = Path(workspace_text)

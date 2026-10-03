@@ -58,6 +58,7 @@ def _is_contained(root: Path, candidate: Path) -> bool:
 
 @dataclass(frozen=True)
 class RuntimeLayout:
+    workspace: Path
     sandbox: Path
     base: Path
     input: Path
@@ -77,6 +78,7 @@ class RuntimeLayout:
         _assert_contained(workspace, sandbox, "runtime sandbox")
         resolved_sandbox = _resolved(sandbox)
         layout = cls(
+            workspace=workspace,
             sandbox=resolved_sandbox,
             base=resolved_sandbox / "base",
             input=resolved_sandbox / "input",
@@ -145,6 +147,9 @@ def build_comfyui_command(
     layout: RuntimeLayout,
     port: int,
     additional_whitelist: Sequence[str] = (),
+    *,
+    frontend_root: Path | None = None,
+    enable_assets: bool = False,
 ) -> list[str]:
     if not 1 <= port <= 65535:
         raise ValueError("port must be between 1 and 65535")
@@ -154,6 +159,19 @@ def build_comfyui_command(
         for name in whitelist
     ):
         raise ValueError("custom-node whitelist names must be unique and filename-safe")
+    frontend_arguments = []
+    if frontend_root is not None:
+        candidate = frontend_root if frontend_root.is_absolute() else layout.workspace / frontend_root
+        # SECURITY: static overrides cannot execute untrusted reference scripts or escape the workspace.
+        _assert_contained(layout.workspace / ".tmp", candidate, "frontend root")
+        candidate = candidate.resolve()
+        index = candidate / "index.html"
+        if not candidate.is_dir() or not index.is_file():
+            raise ContainmentError("frontend root must contain index.html")
+        _assert_contained(candidate, index, "frontend index")
+        if any(_is_reparse_point(path) for path in (candidate, *candidate.rglob("*"))):
+            raise ContainmentError("frontend root must not contain reparse points")
+        frontend_arguments = ["--front-end-root", str(candidate)]
     return [
         str(host.interpreter),
         str(host.main),
@@ -171,12 +189,14 @@ def build_comfyui_command(
         str(layout.temp),
         "--user-directory",
         str(layout.user),
-        # CRITICAL: ComfyUI's database default is rooted beside host source, not --user-directory.
+        # CRITICAL: defaults vary across hosts; explicit memory DB prevents persistent validation writes.
         "--database-url",
         "sqlite:///:memory:",
         "--disable-auto-launch",
         "--cpu",
         "--disable-all-custom-nodes",
+        *frontend_arguments,
+        *(["--enable-assets"] if enable_assets else []),
         "--whitelist-custom-nodes",
         *whitelist,
     ]

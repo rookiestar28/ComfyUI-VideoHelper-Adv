@@ -60,7 +60,7 @@ export function configureSelectLatestNode(node, {
     const fetchFiles = async () => {
         const [path, remainder] = pathStem(node.widgets?.[0]?.value ?? "")
         const params = new URLSearchParams({ path })
-        const optionsURL = api.apiURL("/vhs/getpath?" + params)
+        const optionsURL = "/vhs/getpath?" + params
         try {
             const response = await fetchWithOptionalAuth(optionsURL)
             const payload = response?.ok === false ? [] : await response.json()

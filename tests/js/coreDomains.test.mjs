@@ -9,12 +9,9 @@ function createHostContext(features) {
   const app = { ui: { settings: { getSettingValue: () => false } } };
   const api = {
     apiURL: (route) => route,
-    getAuthStore: async () => null,
+    fetchApi: async () => new Response(JSON.stringify(features)),
   };
-  const fetchStub = async () => ({
-    ok: true,
-    json: async () => features,
-  });
+  const fetchStub = async () => new Response(JSON.stringify(features));
   return { app, api, fetchStub };
 }
 
@@ -24,7 +21,7 @@ test('upload limit rejection returns a useful message before any upload request'
   let xhrConstructed = false;
   const { app, api, fetchStub } = createHostContext({ max_upload_size: 8, assets: true });
   try {
-    globalThis.fetch = fetchStub;
+    api.fetchApi = fetchStub;
     globalThis.alert = (message) => alerts.push(String(message));
     globalThis.XMLHttpRequest = class { constructor() { xhrConstructed = true; } };
     const { uploadFile } = createUploadTransport({ app, api, chainCallback: () => {} });
@@ -45,7 +42,7 @@ test('upload limit rejection returns a useful message before any upload request'
   }
 });
 
-test('asset response without a materialized filename falls back to legacy upload', async () => {
+test('pathless successful asset upload is rejected without a legacy replay', async () => {
   const previous = {
     fetch: globalThis.fetch,
     alert: globalThis.alert,
@@ -56,12 +53,12 @@ test('asset response without a materialized filename falls back to legacy upload
   const routes = [];
   const responses = [
     { status: 200, json: { id: 'deduplicated', user_metadata: {} } },
-    { status: 200, json: { name: 'clip.mp4', subfolder: 'input' } },
   ];
   const { app, api, fetchStub } = createHostContext({ max_upload_size: 1024, assets: true });
   try {
     globalThis.fetch = fetchStub;
-    globalThis.alert = () => assert.fail('no alert expected');
+    const alerts = [];
+    globalThis.alert = message => alerts.push(String(message));
     globalThis.FormData = class { append() {} };
     globalThis.File = class {
       constructor(_parts, name, options) { this.name = name; Object.assign(this, options); }
@@ -78,6 +75,12 @@ test('asset response without a materialized filename falls back to legacy upload
         queueMicrotask(() => this.onload());
       }
     };
+    api.fetchApi = async (route) => {
+      if (route === '/features') return fetchStub();
+      routes.push(route);
+      const response = responses.shift();
+      return new Response(JSON.stringify(response.json), { status: response.status });
+    };
     const { uploadFile } = createUploadTransport({ app, api, chainCallback: () => {} });
 
     const result = await uploadFile(
@@ -86,9 +89,9 @@ test('asset response without a materialized filename falls back to legacy upload
       { acceptedTypes: ['video/mp4'], label: 'Video' },
     );
 
-    assert.deepEqual(routes, ['/api/assets', '/upload/image']);
-    assert.equal(result.route, 'legacy');
-    assert.equal(result.path, 'input/clip.mp4');
+    assert.deepEqual(routes, ['/api/assets']);
+    assert.equal(result, undefined);
+    assert.match(alerts[0], /No second upload/);
   } finally {
     Object.assign(globalThis, previous);
   }

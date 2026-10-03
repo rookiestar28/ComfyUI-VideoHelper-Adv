@@ -195,16 +195,17 @@ function searchBox(event, [x,y], node) {
             if (extensions) {
                 params.extensions = extensions
             }
-            let optionsURL = api.apiURL('/vhs/getpath?' + new URLSearchParams(params));
+            let optionsURL = '/vhs/getpath?' + new URLSearchParams(params);
             try {
                 let resp = await fetchWithOptionalAuth(optionsURL);
+                if (!resp.ok) throw new Error("Path lookup failed")
                 options = await resp.json();
                 options = options.map((o) => o.replace('.','\0'))
                 options = options.sort()
                 options = options.map((o) => o.replace('\0','.'))
             } catch(e) {
                 options = []
-                debugLog("path_lookup_failed", { url: optionsURL, error: String(e) })
+                debugLog("path_lookup_failed", { name: e?.name })
             }
             last_path = path;
         }

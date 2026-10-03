@@ -45,6 +45,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--comfyui-root", required=True, type=Path)
     parser.add_argument("--comfyui-python", required=True, type=Path)
+    parser.add_argument("--front-end-root", type=Path)
     selection = parser.add_mutually_exclusive_group(required=True)
     selection.add_argument("--all", action="store_true", dest="run_all")
     selection.add_argument("--scenario", action="append", default=[])
@@ -1032,7 +1033,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         rows = []
         if normal_scenarios:
             port = _reserve_loopback_port()
-            command = build_comfyui_command(trusted_host, layout, port)
+            command = build_comfyui_command(trusted_host, layout, port, frontend_root=args.front_end_root)
             owned = OwnedComfyUIProcess(command, trusted_host.root)
             client = LoopbackComfyApiClient(f"http://127.0.0.1:{port}")
             with owned:
@@ -1064,6 +1065,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 layout,
                 fault_port,
                 additional_whitelist=("VHS-RuntimeHarness",),
+                frontend_root=args.front_end_root,
             )
             fault_owned = OwnedComfyUIProcess(
                 fault_command,

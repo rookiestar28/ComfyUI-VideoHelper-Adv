@@ -285,7 +285,7 @@ function addVideoPreview(nodeType, isInput=true) {
                 if (!previewWidget?.value?.params?.filename) {
                     return
                 }
-                let qurl = api.apiURL('/vhs/queryvideo?' + new URLSearchParams(previewWidget.value.params))
+                let qurl = '/vhs/queryvideo?' + new URLSearchParams(previewWidget.value.params)
                 let query = undefined
                 let query_res = undefined
                 try {
@@ -293,16 +293,16 @@ function addVideoPreview(nodeType, isInput=true) {
                     query = await query_res.json()
                 } catch(e) {
                     previewWidget.setStatus("Preview metadata lookup failed.")
-                    debugLog("video_query_failed", { url: qurl, error: String(e) })
+                    debugLog("video_query_failed", { name: e?.name })
                     return
                 }
                 if (!query_res.ok || query?.error) {
                     previewWidget.setStatus(query?.error || "Preview metadata unavailable.")
-                    debugLog("video_query_error", { url: qurl, query })
+                    debugLog("video_query_error", { status: query_res.status })
                     return
                 }
                 previewNode.video_query = query
-                debugLog("video_query", { url: qurl, query })
+                debugLog("video_query", { status: query_res.status })
             }
             doQuery()
         }

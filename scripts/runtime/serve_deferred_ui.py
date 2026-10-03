@@ -53,6 +53,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workspace", type=Path, default=Path.cwd())
     parser.add_argument("--comfyui-root", type=Path, required=True)
     parser.add_argument("--comfyui-python", type=Path, required=True)
+    parser.add_argument("--front-end-root", type=Path)
+    parser.add_argument("--enable-assets", action="store_true")
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--stop-file", type=Path, required=True)
     parser.add_argument("--startup-timeout", type=float, default=120.0)
@@ -81,7 +83,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         trusted_host = validate_trusted_host(workspace, args.comfyui_root, args.comfyui_python)
         copy_runtime_plugin(repo_root, layout)
         port = _reserve_loopback_port()
-        command = build_comfyui_command(trusted_host, layout, port)
+        command = build_comfyui_command(
+            trusted_host, layout, port,
+            frontend_root=args.front_end_root, enable_assets=args.enable_assets,
+        )
         client = LoopbackComfyApiClient(f"http://127.0.0.1:{port}")
         manifest.parent.mkdir(parents=True, exist_ok=True)
         stop_file.parent.mkdir(parents=True, exist_ok=True)

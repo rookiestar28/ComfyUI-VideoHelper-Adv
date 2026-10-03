@@ -9,6 +9,7 @@ import { createPathWidgets } from "./pathWidgets.js";
 import { createLatentPreview } from "./latentPreview.js";
 import { createPasteHandler } from "./pasteHandler.js";
 import { configureSelectLatestNode } from "./selectLatest.js";
+import { prepareWidgetConfiguration, resolveWidgetState } from "./widgetState.js";
 
 function chainCallback(object, property, callback) {
     if (object == undefined) {
@@ -46,37 +47,29 @@ const convDict = {
 };
 const renameDict  = {VHS_VideoCombine : {save_output : "save_image"}}
 function useKVState(nodeType) {
+    const configure = nodeType.prototype.configure;
+    if (typeof configure === "function") {
+        nodeType.prototype.configure = function(info, ...args) {
+            return configure.call(this, prepareWidgetConfiguration(info), ...args)
+        }
+    }
     chainCallback(nodeType.prototype, "onNodeCreated", function () {
         chainCallback(this, "onConfigure", function(info) {
             if (!this.widgets) {
                 //Node has no widgets, there is nothing to restore
                 return
             }
-            if (typeof(info.widgets_values) != "object") {
+            if (!info || (typeof(info.widgets_values) != "object" && !info.widgets_values_named)) {
                 //widgets_values is in some unknown inactionable format
                 return
             }
-            let widgetDict = info.widgets_values
-            if (info.widgets_values.length) {
-                //widgets_values is in the old list format
-                if (this.type in convDict) {
-                    //widget does not have a conversion format provided
-                    let convList = convDict[this.type];
-                    if(info.widgets_values.length >= convList.length) {
-                        //has all required fields
-                        widgetDict = {}
-                        for (let i = 0; i < convList.length; i++) {
-                            if(!convList[i]) {
-                                //Element should not be processed (upload button on load image sequence)
-                                continue
-                            }
-                            widgetDict[convList[i]] = info.widgets_values[i];
-                        }
-                    } else {
-                        //widgets_values is missing elements marked as required
-                        //let it fall through to failure state
-                    }
+            const widgetDict = resolveWidgetState(this.type, this.widgets, info, convDict[this.type])
+            if (!widgetDict) {
+                if (Array.isArray(info.widgets_values)) {
+                    app.ui.dialog.show("Failed to restore node: " + this.title + "\nPlease remove and re-add it.")
+                    this.bgcolor = "#C00"
                 }
+                return
             }
             if ('force_size' in widgetDict) {
                 //force size has been phased out, Migrate state
@@ -104,7 +97,7 @@ function useKVState(nodeType) {
             if (widgetDict.videopreview?.params?.force_size) {
                 delete widgetDict.videopreview.params.force_size
             }
-            if (widgetDict.length == undefined) {
+            {
                 for (let w of this.widgets) {
                     if (w.type =="button") {
                         continue
@@ -123,46 +116,40 @@ function useKVState(nodeType) {
                         }
                         //attempt to restore default value
                         let inputs = LiteGraph.getNodeType(this.type).nodeData.input;
-                        let initialValue = null;
+                        let initialValue;
                         if (inputs?.required?.hasOwnProperty(w.name)) {
                             if (inputs.required[w.name][1]?.hasOwnProperty("default")) {
                                 initialValue = inputs.required[w.name][1].default;
-                            } else if (inputs.required[w.name][0].length) {
+                            } else if (Array.isArray(inputs.required[w.name][0])) {
                                 initialValue = inputs.required[w.name][0][0];
                             }
                         } else if (inputs?.optional?.hasOwnProperty(w.name)) {
                             if (inputs.optional[w.name][1]?.hasOwnProperty("default")) {
                                 initialValue = inputs.optional[w.name][1].default;
-                            } else if (inputs.optional[w.name][0].length) {
+                            } else if (Array.isArray(inputs.optional[w.name][0])) {
                                 initialValue = inputs.optional[w.name][0][0];
                             }
                         }
-                        if (initialValue) {
+                        if (initialValue !== undefined) {
                             w.value = initialValue;
                             w.callback?.(w.value)
                         }
                     }
                 }
-            } else {
-                //Saved data was not a map made by this method
-                //and a conversion dict for it does not exist
-                //It's likely an array and that has been blindly applied
-                if (info?.widgets_values?.length != this.widgets.length) {
-                    //Widget could not have restored properly
-                    //Note if multiple node loads fail, only the latest error dialog displays
-                    app.ui.dialog.show("Failed to restore node: " + this.title + "\nPlease remove and re-add it.")
-                    this.bgcolor = "#C00"
-                }
             }
         });
         chainCallback(this, "onSerialize", function(info) {
             info.widgets_values = {};
+            info.widgets_values_named = {};
             if (!this.widgets) {
                 //object has no widgets, there is nothing to store
                 return;
             }
             for (let w of this.widgets) {
                 info.widgets_values[w.name] = w.value;
+                if (w.type !== "button" && w.serialize !== false && w.options?.serialize !== false) {
+                    info.widgets_values_named[w.name] = w.value;
+                }
             }
         });
     })

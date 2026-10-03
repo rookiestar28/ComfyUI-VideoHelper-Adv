@@ -31,7 +31,8 @@ export function parseWebmMetadataBuffer(arrayBuffer) {
                 const vint = dataView.getUint32(offset + 2);
                 const nOctets = Math.clz32(vint) + 1;
                 if (nOctets < 4) {
-                    const length = (vint >> (8 * (4 - nOctets))) & ~(1 << (7 * nOctets));
+                    // IMPORTANT: a one-octet EBML size starts with 0x80; signed shift makes valid small tags negative.
+                    const length = (vint >>> (8 * (4 - nOctets))) & ~(1 << (7 * nOctets));
                     const content = decoder.decode(videoData.slice(offset + 2 + nOctets, offset + 2 + nOctets + length));
                     return parseMetadataJson(content);
                 }

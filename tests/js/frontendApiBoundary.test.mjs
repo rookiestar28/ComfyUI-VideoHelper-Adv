@@ -20,3 +20,13 @@ test('VHS core keeps only supported ComfyUI entry-point imports', () => {
     '../../../scripts/app.js',
   ]);
 });
+
+test('VHS request domains delegate transport without private auth or expanded query URLs', async () => {
+  for (const name of ['uploadTransport', 'pathWidgets', 'mediaPreview', 'selectLatest']) {
+    const domain = await readFile(new URL(`../../web/js/${name}.js`, import.meta.url), 'utf8');
+    assert.doesNotMatch(domain, /getAuthStore|getAuthHeader|XMLHttpRequest|\bfetch\s*\(/);
+    assert.doesNotMatch(domain, /api\.apiURL\(['"]\/vhs\/(?:getpath|queryvideo)/);
+  }
+  const media = await readFile(new URL('../../web/js/mediaPreview.js', import.meta.url), 'utf8');
+  assert.match(media, /api\.apiURL\(['"]\/vhs\/viewvideo/);
+});
