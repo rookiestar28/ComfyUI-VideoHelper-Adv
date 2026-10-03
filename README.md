@@ -12,6 +12,28 @@ repo-appropriate automated tests.
 
 <details>
 
+<summary><strong>2.1.0: Host and frontend compatibility improvements</strong></summary>
+
+- Uploads, feature discovery, path selection, and metadata queries now use
+  ComfyUI's public request transport, preserving host authentication and
+  workspace context. Upload activity stays visible when byte progress is unavailable.
+- Single-file uploads accept safe canonical Asset loader paths, with compatible
+  handling of older responses. Successful or uncertain writes are not replayed.
+- Image-sequence folder uploads preserve subfolders, filenames, and ordering
+  instead of flattening the sequence into Asset tags.
+- Saved-video workflow imports preserve filename and import context, including
+  legacy WebM/MKV metadata, while native media handling remains available.
+- Saved widget values survive frontend configuration migrations, including
+  keyed, named, and positional values and explicit `false`, `0`, or empty values.
+- Supported animated latent previews encode RGB JPEG safely; unsupported decoder
+  lifecycles remain under ComfyUI's own previewer.
+- Compatibility follows public host contracts rather than an exact frontend
+  bundle version. Workflow restoration was checked in both Canvas and Nodes 2.0/Vue.
+
+</details>
+
+<details>
+
 <summary><strong>Filesystem, URL, and metadata-query boundaries hardened</strong></summary>
 
 - Media reads, directory listings, previews, output writes, and artifact deletes
@@ -63,7 +85,7 @@ repo-appropriate automated tests.
 
 <details>
 
-<summary><strong>Validation and independent release safeguards added</strong></summary>
+<summary><strong>Validation and guarded Registry publishing</strong></summary>
 
 - Added repository-local Python, JavaScript syntax, Node helper, video-format, and
   diff gates with native Windows and Linux entry points.
@@ -72,9 +94,12 @@ repo-appropriate automated tests.
   their own loopback hosts.
 - Added least-privilege hosted validation for Ubuntu/Python 3.10 and 3.12 plus
   Windows/Python 3.12, using Node.js 20 for frontend helper checks.
-- Added deterministic package inspection and a manually dispatched, confirmation-
-  and tag-gated Comfy Registry workflow. These safeguards do not publish anything
-  unless the explicit publish path is separately invoked with release credentials.
+- Registry publishing runs when a push to `main` changes the version in
+  `pyproject.toml`; pushes without a version change do not publish a new version.
+  Metadata, package contents, publisher ownership, and credential presence are checked first.
+- Manual dispatch supports preflight and publish recovery. Recovery requires
+  `main`, its exact approved commit, and a matching node/version confirmation;
+  a version tag is not required.
 
 </details>
 
@@ -93,6 +118,7 @@ repo-appropriate automated tests.
   - [Batch, Info, and Utility Nodes](#batch-info-and-utility-nodes)
 - [Video Previews](#video-previews)
   - [Advanced Previews](#advanced-previews)
+  - [Animated Latent Previews](#animated-latent-previews)
 - [Filesystem and URL Security Policy](#filesystem-and-url-security-policy)
 - [Video Formats](#video-formats)
 - [Testing This Fork](#testing-this-fork)
@@ -117,7 +143,10 @@ validation boundaries:
 | Filename templates | `VideoCombine` did not pass dimensions into ComfyUI's save helper, so `%width%` and `%height%` resolved to `0`. | `filename_prefix` dimension tokens resolve from the first frame dimensions. |
 | Preview routing | Completed output preview routing has been aligned to avoid showing stale input-only previews for completed outputs. | Preview helper tests cover advanced routing states. |
 | Lazy audio | Lazy audio objects could be treated as absent before their waveform was materialized. | Audio presence is preserved through lazy evaluation and verified on the final muxed output. |
-| Frontend compatibility | Deprecated or private frontend internals create breakage as ComfyUI and Desktop evolve. | Production modules use supported ComfyUI entry points, publish format-widget contracts from the backend, and retain stable workflow/node identities. |
+| Frontend compatibility | Deprecated or private frontend internals create breakage as ComfyUI and Desktop evolve. | Production modules use public ComfyUI request/extension entry points, backend-published format contracts, and widget restoration across frontend migrations. |
+| Upload paths and replay | Asset response changes or lost directory structure can select the wrong media; retries after uncertain writes can duplicate uploads. | Safe canonical loader paths, compatible older responses, path-preserving folder uploads, and no replay after successful or uncertain writes. |
+| Saved-video imports | Dropping import context or loading a workflow twice can disrupt restoration. | Legacy workflow imports retain filename/source context and load once; native media handling preserves its original call behavior. |
+| Animated previews | Four-channel decoded images cannot be encoded directly as JPEG, and decoder lifecycles vary. | Supported image/factor previews produce RGB JPEG; unsupported previewers retain host ownership. |
 | Filesystem and URL access | Path reads, previews, URL downloads, writes, and deletes can drift into inconsistent trust rules. | One canonical capability policy defaults reads to ComfyUI host roots, keeps writes/deletes in output or temp, and disables URL loading by default for remote-restricted deployments. |
 | Metadata queries | An unbounded path-keyed metadata cache could retain stale or no-longer-authorized results. | Query metadata uses a bounded LRU with current authorization and file-state checks on every boundary. |
 | Tests and validation | Upstream is primarily plugin/runtime driven. | This fork adds local and hosted unit/static gates, format validation, Node helper tests, owned live-host matrices, and deterministic release-package inspection. |
@@ -171,7 +200,9 @@ similar to Load Video:
 - `skip_first_images`
 - `select_every_nth`
 
-Upload and path variants are available.
+Upload and path variants are available. Folder uploads preserve the selected
+subfolder, original filenames, and deterministic file order. They use the
+path-preserving upload route even when single-file Asset uploads are available.
 
 ### Video Combine
 
@@ -199,6 +230,11 @@ Workflow extra options still apply:
 
 - `VHS_MetadataImage=false`: do not write the utility PNG sidecar.
 - `VHS_KeepIntermediate=false`: remove true intermediate artifacts while preserving final artifacts.
+
+When workflow metadata is saved in a supported video container, opening or
+dropping that video into ComfyUI can restore the graph. The import adapter keeps
+the filename and import context, supports legacy MP4/WebM/MKV metadata, and
+delegates videos without a usable embedded workflow to ComfyUI's native handling.
 
 ### Prune Outputs
 
@@ -263,6 +299,18 @@ Tradeoffs:
 
 - Preview generation can add delay for long inputs.
 - Generated previews are lower quality than the original media; use Open preview for the source artifact.
+
+### Animated Latent Previews
+
+Enable `VHS.LatentPreview` in ComfyUI settings to show animated sampling previews
+for supported host image/factor previewers. `VHS.LatentPreviewRate` controls the
+playback rate; `0` retains the host latent format's automatic default. This rate
+does not change the output video's frame rate.
+
+JPEG preview frames are encoded as RGB, including when an image decoder returns
+four channels. Unknown, temporal, or compile-aware previewers keep ComfyUI's
+original behavior; enabling this setting does not add support for every model
+or decoder. Preview targeting also handles nodes inside subgraphs.
 
 ## Filesystem and URL Security Policy
 
@@ -436,6 +484,9 @@ manage a browser dependency.
 ## Compatibility Notes
 
 - The node names and common workflow shape are kept close to upstream VHS for workflow compatibility.
+- Compatibility uses public host capabilities rather than an exact core/frontend bundle whitelist. Older and newer frontend workflow formats are handled without a version-specific branch.
+- Uploads use the host's public request transport and current advertised features. Authorization errors and uncertain write outcomes are reported without attempting a duplicate upload.
+- Saved widget restoration supports keyed, named, and compact positional values, preserving explicit false, zero, and empty values across frontend migrations.
 - Output behavior is stricter than upstream when it prevents silent corruption, metadata leakage, unsupported audio muxing, or unsafe deletion.
 - External custom `video_formats` should explicitly declare audio support with `supports_audio` and `audio_pass` when audio is intended.
 - Path authorization is enforced by a central, canonical capability policy. External read roots never grant output-write or delete access.
