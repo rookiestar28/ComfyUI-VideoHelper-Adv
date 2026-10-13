@@ -12,6 +12,40 @@ repo-appropriate automated tests.
 
 <details>
 
+<summary><strong>3.0.0: Workflow input validation, frontend fixes, and stricter checks</strong></summary>
+
+This release contains breaking changes; see the last two items.
+
+- Video Combine validates every format option against the selected format
+  before encoding: choices must belong to that format, numbers must be within
+  range, and free-text values must be simple tokens that never reach FFmpeg
+  filters. Inputs a format does not declare are ignored.
+- Format names resolve only through the discovered format definitions,
+  including nested custom formats.
+- Upload and media-list loaders authorize the selected name before touching the
+  filesystem, and report missing and out-of-scope names with the same message.
+- Folder previews escape listed file names, Prune Outputs only accepts
+  filenames linked from a node that outputs them, and URL downloads ignore
+  downloader user configuration and fetch a single item.
+- Preview and widget fixes: aspect-ratio changes and same-name re-uploads
+  refresh the preview, stale video metadata responses are ignored, `VHS_Unbatch`
+  type cloning works inside subgraphs, the path dialog handles keyboard and
+  centering edge cases, unknown latent preview frames are ignored, and integer
+  widgets without a step round correctly.
+- Asset uploads use a route that also works on older frontends without a
+  second upload attempt.
+- Repository checks also catch whitespace errors in staged and committed
+  changes, report setup errors with a consistent exit code, and ship the hook
+  scripts as executable.
+- Breaking: `VHS_PATH_POLICY=legacy_local` has been removed and now stops the
+  node pack from loading; use `allowlist` with `VHS_EXTERNAL_READ_ROOTS`.
+- Breaking: the deprecated `manual_format_widgets` input is rejected, and
+  saved format values outside the rules above must be updated.
+
+</details>
+
+<details>
+
 <summary><strong>2.1.0: Host and frontend compatibility improvements</strong></summary>
 
 - Uploads, feature discovery, path selection, and metadata queries now use
@@ -38,9 +72,9 @@ repo-appropriate automated tests.
 
 - Media reads, directory listings, previews, output writes, and artifact deletes
   now pass through one canonical capability policy with safer host-root defaults.
-- Explicit deployment, external-read allowlist, legacy-local compatibility, and
-  HTTPS URL modes now fail closed when their configuration is contradictory or
-  unsafe for the active listen posture.
+- Explicit deployment, external-read allowlist, and HTTPS URL modes now fail
+  closed when their configuration is contradictory or unsafe for the active
+  listen posture. (The legacy-local mode added alongside them was removed in 3.0.0.)
 - URL downloads reject credential-bearing, non-HTTPS, and private-address targets
   before launch, then require bounded results to remain inside ComfyUI temp.
 - Video metadata queries now use a bounded, file-state-aware cache that
