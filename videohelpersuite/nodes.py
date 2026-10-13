@@ -24,7 +24,8 @@ from .batched_nodes import VAEEncodeBatched, VAEDecodeBatched
 from .utils import ffmpeg_path, get_audio, hash_path, validate_path, requeue_workflow, \
         gifski_path, calculate_file_hash, strip_path, try_download_video, is_url, \
         imageOrLatent, BIGMAX, merge_filter_args, ENCODE_ARGS, floatOrInt, cached, \
-        ContainsAll, debug_log
+        debug_log, hash_annotated_media, resolve_annotated_media, validate_annotated_media
+from .path_policy import PathAccessDenied
 from .video_metadata import create_ffmetadata_file
 from comfy.utils import ProgressBar
 
@@ -90,8 +91,9 @@ class LoadAudio:
     def IS_CHANGED(s, audio_file, **kwargs):
         return hash_path(audio_file)
 
+    # IMPORTANT: no **kwargs here; a VAR_KEYWORD validator disables host bounds checks.
     @classmethod
-    def VALIDATE_INPUTS(s, audio_file, **kwargs):
+    def VALIDATE_INPUTS(s, audio_file):
         return validate_path(audio_file, allow_none=True)
 
 class LoadAudioUpload:
@@ -119,8 +121,12 @@ class LoadAudioUpload:
     FUNCTION = "load_audio"
 
     def load_audio(self, start_time=0, duration=0, **kwargs):
-        audio_file = folder_paths.get_annotated_filepath(strip_path(kwargs['audio']))
-        if audio_file is None or validate_path(audio_file) != True:
+        # SECURITY: upload names resolve only inside their annotated host root.
+        try:
+            audio_file = resolve_annotated_media(kwargs['audio']).canonical
+        except PathAccessDenied:
+            raise Exception("Audio source is not authorized or does not exist.") from None
+        if validate_path(audio_file) != True:
             raise Exception("Audio source is not authorized or does not exist.")
 
         audio = get_audio(audio_file, start_time, duration)
@@ -129,13 +135,11 @@ class LoadAudioUpload:
 
     @classmethod
     def IS_CHANGED(s, audio, **kwargs):
-        audio_file = folder_paths.get_annotated_filepath(strip_path(audio))
-        return hash_path(audio_file)
+        return hash_annotated_media(audio)
 
     @classmethod
-    def VALIDATE_INPUTS(s, audio, **kwargs):
-        audio_file = folder_paths.get_annotated_filepath(strip_path(audio))
-        return validate_path(audio_file, allow_none=True)
+    def VALIDATE_INPUTS(s, audio):
+        return validate_annotated_media(audio)
 class AudioToVHSAudio:
     """Legacy method for external nodes that utilized VHS_AUDIO,
     VHS_AUDIO is deprecated as a format and should no longer be used"""
@@ -216,7 +220,24 @@ class PruneOutputs:
     CATEGORY = "Video Helper Suite 🎥🅥🅗🅢"
     FUNCTION = "prune_outputs"
 
+    @classmethod
+    def VALIDATE_INPUTS(cls, input_types=None):
+        # SECURITY: deletion targets must come from a linked VHS_FILENAMES producer. A literal
+        # prompt value has no received type, and declaring input_types disables the host's own
+        # link type check, so the exact type is compared here (never relax to wildcard types).
+        received = (input_types or {}).get("filenames")
+        if isinstance(received, str) and str.__eq__(received, "VHS_FILENAMES") is True:
+            return True
+        return "filenames must be linked from a node that outputs VHS_FILENAMES."
+
     def prune_outputs(self, filenames, options):
+        if (
+            not isinstance(filenames, (tuple, list))
+            or len(filenames) != 2
+            or not isinstance(filenames[1], (tuple, list))
+            or not all(isinstance(path, str) for path in filenames[1])
+        ):
+            raise Exception("filenames must be a VHS_FILENAMES result.")
         if len(filenames[1]) == 0:
             return ()
         utility_files, intermediate_files, final_files = _split_output_files(filenames[1])

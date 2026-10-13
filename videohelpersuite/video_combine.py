@@ -2,6 +2,8 @@
 
 import datetime
 import itertools
+import math
+import numbers
 import os
 import re
 import subprocess
@@ -27,10 +29,67 @@ from .output_artifacts import (
     _split_output_files, _video_format_saves_metadata,
 )
 from .utils import (
-    ContainsAll, ENCODE_ARGS, debug_log, ffmpeg_path, floatOrInt,
+    ENCODE_ARGS, debug_log, ffmpeg_path, floatOrInt,
     imageOrLatent, merge_filter_args, requeue_workflow,
 )
 from .video_metadata import create_ffmetadata_file
+
+
+_HIDDEN_INPUTS = {
+    "prompt": "PROMPT",
+    "extra_pnginfo": "EXTRA_PNGINFO",
+    "unique_id": "UNIQUE_ID",
+}
+# Every combine_video parameter name; a format widget must never alias one of them.
+_RESERVED_INPUT_NAMES = frozenset({
+    "images", "latents", "frame_rate", "loop_count", "filename_prefix", "format",
+    "pingpong", "save_output", "audio", "meta_batch", "vae", "manual_format_widgets",
+    "has_alpha", *_HIDDEN_INPUTS,
+})
+_IMAGE_FORMATS = frozenset({"gif", "webp"})
+
+
+class _HiddenInputs(dict):
+    """Host hidden inputs plus the bounded set of widget-only format names.
+
+    SECURITY: ComfyUI forwards any prompt key for which ``key in hidden`` is true without
+    validation. Only real hidden inputs and widget names declared by discovered formats may
+    pass; arbitrary prompt keys must stay undeclared so the host drops them.
+    """
+
+    def __init__(self, hidden, widget_only_names):
+        super().__init__(hidden)
+        self._widget_only_names = frozenset(widget_only_names) - frozenset(hidden)
+
+    def __contains__(self, key):
+        return super().__contains__(key) or key in self._widget_only_names
+
+    def __getitem__(self, key):
+        if not super().__contains__(key) and key in self._widget_only_names:
+            return (None, {})
+        return super().__getitem__(key)
+
+
+def _parse_output_format(output_format):
+    if isinstance(output_format, str):
+        format_type, separator, format_ext = output_format.partition("/")
+        if separator and format_ext:
+            if format_type == "video" or (format_type == "image" and format_ext in _IMAGE_FORMATS):
+                return format_type, format_ext
+    raise ValueError("Unsupported VideoCombine output format.")
+
+
+def _validate_encode_numbers(frame_rate, loop_count):
+    # IMPORTANT: loop_count is interpolated into an FFmpeg filter; linked values bypass host bounds.
+    if not isinstance(loop_count, numbers.Integral) or isinstance(loop_count, bool) or loop_count < 0:
+        raise ValueError("loop_count must be a non-negative integer.")
+    if (
+        not isinstance(frame_rate, numbers.Real)
+        or isinstance(frame_rate, bool)
+        or not math.isfinite(frame_rate)
+        or frame_rate <= 0
+    ):
+        raise ValueError("frame_rate must be a positive finite number.")
 
 
 class VideoCombine:
@@ -49,10 +108,7 @@ class VideoCombine:
             "meta_batch": ("VHS_BatchManager",),
             "vae": ("VAE",),
         }
-        reserved_names = {
-            "images", "frame_rate", "loop_count", "filename_prefix",
-            "format", "pingpong", "save_output", *optional_inputs,
-        }
+        reserved_names = {*_RESERVED_INPUT_NAMES, *optional_inputs}
         for name, config in format_widget_inputs.items():
             if name in reserved_names:
                 logger.warn(
@@ -75,11 +131,10 @@ class VideoCombine:
                 "save_output": ("BOOLEAN", {"default": True}),
             },
             "optional": optional_inputs,
-            "hidden": ContainsAll({
-                "prompt": "PROMPT",
-                "extra_pnginfo": "EXTRA_PNGINFO",
-                "unique_id": "UNIQUE_ID"
-            }),
+            "hidden": _HiddenInputs(
+                _HIDDEN_INPUTS,
+                set(incompatible_widgets) - _RESERVED_INPUT_NAMES,
+            ),
         }
 
     RETURN_TYPES = ("VHS_FILENAMES",)
@@ -107,6 +162,16 @@ class VideoCombine:
         vae=None,
         **kwargs
     ):
+        # SECURITY: the deprecated override bypassed host validation; reject it before any work.
+        if manual_format_widgets is not None:
+            raise ValueError(
+                "manual_format_widgets is no longer supported; pass format widget values as inputs."
+            )
+        format_type, format_ext = _parse_output_format(format)
+        _validate_encode_numbers(frame_rate, loop_count)
+        lossless = kwargs.get("lossless", True)
+        if format == "image/webp" and not isinstance(lossless, bool):
+            raise ValueError("Format widget 'lossless' must be a boolean.")
         if latents is not None:
             images = latents
         if images is None:
@@ -175,7 +240,6 @@ class VideoCombine:
         extra_options = _get_workflow_extra_options(extra_pnginfo)
 
         has_audio = _has_audio_input(audio)
-        format_type, format_ext = format.split("/")
         video_format = None
         if format_type == "image":
             if has_audio:
@@ -186,10 +250,6 @@ class VideoCombine:
             # Use ffmpeg to save a video
             if ffmpeg_path is None:
                 raise ProcessLookupError(f"ffmpeg is required for video outputs and could not be found.\nIn order to use video outputs, you must either:\n- Install imageio-ffmpeg with pip,\n- Place a ffmpeg executable in {os.path.abspath('')}, or\n- Install ffmpeg and add it to the system path.")
-
-            if manual_format_widgets is not None:
-                logger.warn("Format args can now be passed directly. The manual_format_widgets argument is now deprecated")
-                kwargs.update(manual_format_widgets)
 
             has_alpha = first_image.shape[-1] == 4
             kwargs["has_alpha"] = has_alpha
@@ -257,7 +317,7 @@ class VideoCombine:
                     exif = Image.Exif()
                     exif[ExifTags.IFD.Exif] = {36867: datetime.datetime.now().isoformat(" ")[:19]}
                     image_kwargs['exif'] = exif
-                    image_kwargs['lossless'] = kwargs.get("lossless", True)
+                    image_kwargs['lossless'] = lossless
                 file = f"{filename}_{counter:05}.{format_ext}"
                 file_path = os.path.join(full_output_folder, file)
                 file_path = track_output_file(file_path)

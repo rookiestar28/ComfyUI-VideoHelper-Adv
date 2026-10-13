@@ -71,12 +71,6 @@ class MultiInput(str):
 imageOrLatent = MultiInput("IMAGE", ["IMAGE", "LATENT"])
 floatOrInt = MultiInput("FLOAT", ["FLOAT", "INT"])
 
-class ContainsAll(dict):
-    def __contains__(self, other):
-        return True
-    def __getitem__(self, key):
-        return super().get(key, (None, {}))
-
 if "VHS_FORCE_FFMPEG_PATH" in os.environ:
     ffmpeg_path = os.environ.get("VHS_FORCE_FFMPEG_PATH")
 else:
@@ -189,8 +183,12 @@ def try_download_video(url, *, resolver=None):
     #Best to just always keep defaults
     #dl_format = ['-f', 'ba'] if is_audio else []
     try:
+        # SECURITY: ambient yt-dlp config files could redirect output paths or add options.
         res = subprocess.run([
             ytdl_path,
+            "--ignore-config",
+            "--no-playlist",
+            "--restrict-filenames",
             "--max-filesize", "2147483648",
             "--print", "after_move:filepath",
             "-P", folder_paths.get_temp_directory(),
@@ -481,6 +479,71 @@ def validate_path(path, allow_none=False, allow_url=True):
     if not os.path.isfile(authorized.canonical):
         return "Media file does not exist."
     return True
+
+
+_ANNOTATED_ROOTS = (("[output]", "output"), ("[input]", "input"), ("[temp]", "temp"))
+UNAVAILABLE_MEDIA_MESSAGE = "Selected media is unavailable or not authorized."
+
+
+def _host_root_directory(root_id):
+    if root_id == "output":
+        return folder_paths.get_output_directory()
+    if root_id == "temp":
+        return folder_paths.get_temp_directory()
+    return folder_paths.get_input_directory()
+
+
+def resolve_annotated_media(name, capability=PathCapability.READ_MEDIA):
+    """Resolve an upload-widget name such as ``clip.mp4 [output]`` inside its one host root."""
+    if not isinstance(name, str):
+        raise PathAccessDenied(capability, "malformed media name")
+    relative = strip_path(name)
+    root_id = "input"
+    for suffix, annotated_root in _ANNOTATED_ROOTS:
+        if relative.endswith(suffix):
+            # Mirrors ComfyUI: the annotation and its one separator character are removed.
+            relative, root_id = relative[:-(len(suffix) + 1)], annotated_root
+            break
+    # SECURITY: reject traversal, drive/stream syntax, and control characters before any
+    # filesystem access, so validation cannot probe paths outside the annotated root.
+    if (
+        not relative
+        or any(ord(character) < 32 or ord(character) == 127 for character in relative)
+        or ":" in relative
+        or relative[0] in "/\\"
+        or os.path.isabs(relative)
+        or ".." in re.split(r"[\\/]", relative)
+    ):
+        raise PathAccessDenied(capability, "malformed media name")
+    authorized = PATH_POLICY.authorize_path(
+        os.path.join(_host_root_directory(root_id), relative),
+        capability,
+    )
+    if authorized.root_id != root_id:
+        raise PathAccessDenied(capability, "outside the selected media root")
+    return authorized
+
+
+def validate_annotated_media(name, capability=PathCapability.READ_MEDIA):
+    """Return True or one uniform message that never distinguishes denial from absence."""
+    try:
+        authorized = resolve_annotated_media(name, capability)
+    except PathAccessDenied:
+        return UNAVAILABLE_MEDIA_MESSAGE
+    exists = os.path.isdir if capability is PathCapability.LIST_DIRECTORY else os.path.isfile
+    if not exists(authorized.canonical):
+        return UNAVAILABLE_MEDIA_MESSAGE
+    return True
+
+
+def hash_annotated_media(name):
+    try:
+        path = resolve_annotated_media(name).canonical
+    except PathAccessDenied:
+        return "DENIED"
+    if not os.path.isfile(path):
+        return "DNE"
+    return calculate_file_hash(path)
 
 
 def validate_index(index: int, length: int=0, is_range: bool=False, allow_negative=False, allow_missing=False) -> int:

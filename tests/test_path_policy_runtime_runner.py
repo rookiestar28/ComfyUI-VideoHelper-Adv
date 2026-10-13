@@ -7,7 +7,10 @@ from unittest.mock import patch
 
 from scripts.runtime.run_path_policy_matrix import (
     _contained,
+    _format_override_prompt,
+    _literal_prune_prompt,
     _load_images_prompt,
+    _node_error_text,
     _policy_environment,
     _synthetic_png,
 )
@@ -61,6 +64,27 @@ class PathPolicyRuntimeRunnerTests(unittest.TestCase):
         self.assertEqual(prompt["2"]["inputs"]["images"], ["1", 0])
         self.assertEqual(prompt["2"]["inputs"]["format"], "video/h264-mp4")
         self.assertTrue(prompt["2"]["inputs"]["save_output"])
+
+    def test_boundary_fixtures_exercise_literal_and_deprecated_inputs(self):
+        literal = _literal_prune_prompt(Path("/contained/output/keep.tmp"))["prompt"]["1"]
+        self.assertEqual(literal["class_type"], "VHS_PruneOutputs")
+        self.assertIn("__value__", literal["inputs"]["filenames"])
+
+        override = _format_override_prompt(Path("/contained/input/images"), "runtime/override")
+        combine = override["prompt"]["2"]["inputs"]
+        self.assertEqual(combine["format"], "video/ffmpeg-gif")
+        self.assertIn("manual_format_widgets", combine)
+        self.assertNotIn("save_metadata", combine)
+
+    def test_node_error_text_masks_only_the_callers_own_input(self):
+        document = {"node_errors": {"1": {"errors": [
+            {"message": "Custom validation failed", "details": "directory - ../user/outside"},
+        ]}}}
+        self.assertEqual(
+            _node_error_text(document, "1", "../user/outside"),
+            '[["Custom validation failed", "directory - <supplied>"]]',
+        )
+        self.assertEqual(_node_error_text({}, "1", "x"), "[]")
 
     def test_containment_rejects_sibling_prefix_and_accepts_child(self):
         root = Path("/workspace/project")

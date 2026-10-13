@@ -30,6 +30,14 @@ def error_response(status, message):
     return web.Response(status=status, text=message)
 
 
+def _ffconcat_quote(path):
+    # IMPORTANT: ffconcat is line- and quote-delimited. A raw quote or newline in a listed name
+    # would end the entry and start a new directive, so quote every entry and skip control text.
+    if any(ord(character) < 32 or ord(character) == 127 for character in path):
+        return None
+    return "'" + path.replace("'", "'\\''") + "'"
+
+
 def parse_int(query, key, default=0, minimum=None):
     try:
         value = int(float(query.get(key, default)))
@@ -201,10 +209,18 @@ async def view_video(request):
         if len(valid_images) == 0:
             cleanup_temp_paths([concat_file])
             return error_response(204, "No valid images were found for folder preview.")
+        concat_entries = [
+            quoted
+            for quoted in (_ffconcat_quote(os.path.abspath(path)) for path in valid_images)
+            if quoted is not None
+        ]
+        if len(concat_entries) == 0:
+            cleanup_temp_paths([concat_file])
+            return error_response(204, "No valid images were found for folder preview.")
         with open(concat_file, "w", encoding="utf-8") as f:
             f.write("ffconcat version 1.0\n")
-            for path in valid_images:
-                f.write("file '" + os.path.abspath(path) + "'\n")
+            for quoted in concat_entries:
+                f.write("file " + quoted + "\n")
                 f.write("duration 0.125\n")
         cleanup_paths.append(concat_file)
         in_args = ["-safe", "0", "-i", concat_file]

@@ -42,7 +42,6 @@ class PathCapability(str, Enum):
 class FilesystemMode(str, Enum):
     HOST_ROOTS = "host_roots"
     ALLOWLIST = "allowlist"
-    LEGACY_LOCAL = "legacy_local"
 
 
 class DeploymentProfile(str, Enum):
@@ -105,12 +104,6 @@ class PathPolicy:
         matched = _find_root(canonical, capability, self.roots)
         if matched is not None:
             return AuthorizedPath(requested, canonical, capability, matched.root_id)
-
-        if (
-            self.filesystem_mode is FilesystemMode.LEGACY_LOCAL
-            and capability in _READ_CAPABILITIES
-        ):
-            return AuthorizedPath(requested, canonical, capability, "legacy_local")
 
         raise PathAccessDenied(capability, "outside configured capability roots")
 
@@ -203,7 +196,7 @@ def build_path_policy(
         else DeploymentProfile.REMOTE_RESTRICTED
     )
     profile = _parse_profile(environment, derived_profile)
-    filesystem_mode, legacy_alias = _parse_filesystem_mode(environment, profile)
+    filesystem_mode, legacy_alias = _parse_filesystem_mode(environment)
     external_roots = _parse_external_roots(environment, filesystem_mode)
     url_mode = _parse_url_mode(environment, profile)
 
@@ -348,7 +341,6 @@ def _parse_profile(
 
 def _parse_filesystem_mode(
     environment: Mapping[str, str],
-    profile: DeploymentProfile,
 ) -> tuple[FilesystemMode, bool]:
     new_setting = environment.get("VHS_PATH_POLICY")
     legacy_present = "VHS_STRICT_PATHS" in environment
@@ -358,20 +350,18 @@ def _parse_filesystem_mode(
     if legacy_present:
         return FilesystemMode.HOST_ROOTS, True
     if new_setting is None:
-        selected = FilesystemMode.HOST_ROOTS
-    else:
-        try:
-            selected = FilesystemMode(new_setting.strip().lower())
-        except ValueError:
-            raise PolicyConfigurationError("invalid filesystem policy") from None
-    if (
-        selected is FilesystemMode.LEGACY_LOCAL
-        and profile is not DeploymentProfile.TRUSTED_LOCAL
-    ):
+        return FilesystemMode.HOST_ROOTS, False
+    normalized = new_setting.strip().lower()
+    # SECURITY: arbitrary-path reads were retired; fail closed instead of widening scope.
+    if normalized == "legacy_local":
         raise PolicyConfigurationError(
-            "legacy_local is invalid outside trusted_local deployment"
+            "VHS_PATH_POLICY=legacy_local is no longer supported; use "
+            "VHS_PATH_POLICY=allowlist with VHS_EXTERNAL_READ_ROOTS for extra read-only roots"
         )
-    return selected, False
+    try:
+        return FilesystemMode(normalized), False
+    except ValueError:
+        raise PolicyConfigurationError("invalid filesystem policy") from None
 
 
 def _parse_external_roots(

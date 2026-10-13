@@ -98,6 +98,37 @@ def _request(port: int, path: str, query: Mapping[str, str]) -> tuple[int, bytes
         return int(exc.code), exc.read()
 
 
+def _post_prompt(port: int, fixture: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
+    opener = build_opener(ProxyHandler({}))
+    request = Request(
+        f"http://127.0.0.1:{port}/prompt",
+        data=json.dumps(fixture).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with opener.open(request, timeout=60) as response:
+            status, body = int(response.status), response.read()
+    except HTTPError as exc:
+        status, body = int(exc.code), exc.read()
+    try:
+        document = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        document = {}
+    return status, document if isinstance(document, dict) else {}
+
+
+def _node_error_text(document: Mapping[str, Any], node_id: str, supplied: str) -> str:
+    node = document.get("node_errors", {}).get(node_id, {})
+    errors = node.get("errors", []) if isinstance(node, Mapping) else []
+    text = json.dumps(
+        [[error.get("message"), error.get("details")] for error in errors if isinstance(error, Mapping)],
+        sort_keys=True,
+    )
+    # The caller's own input may be echoed; only the remaining text must be uniform.
+    return text.replace(json.dumps(supplied)[1:-1], "<supplied>")
+
+
 def _history_succeeded(history: Mapping[str, Any]) -> bool:
     status = history.get("status", {})
     return (
@@ -184,6 +215,60 @@ def _prune_prompt(inside: Path, outside: Path) -> dict[str, Any]:
             "2": {
                 "class_type": "VHS_PruneOutputs",
                 "inputs": {"filenames": ["1", 0], "options": "All"},
+            },
+        }
+    }
+
+
+def _format_override_prompt(directory: Path, prefix: str) -> dict[str, Any]:
+    fixture = _load_images_prompt(directory, prefix)
+    fixture["prompt"]["2"]["inputs"].update({
+        "format": "video/ffmpeg-gif",
+        "dither": "sierra2_4a",
+        # Benign invalid sentinel: honoring this deprecated override makes the encode fail.
+        "manual_format_widgets": {"dither": "not_a_dither_mode"},
+    })
+    fixture["prompt"]["2"]["inputs"].pop("save_metadata", None)
+    return fixture
+
+
+def _upload_directory_prompt(name: str) -> dict[str, Any]:
+    return {
+        "prompt": {
+            "1": {
+                "class_type": "VHS_LoadImages",
+                "inputs": {
+                    "directory": name,
+                    "image_load_cap": 1,
+                    "skip_first_images": 0,
+                    "select_every_nth": 1,
+                },
+            },
+            "2": {
+                "class_type": "VHS_VideoCombine",
+                "inputs": {
+                    "images": ["1", 0],
+                    "frame_rate": 8,
+                    "loop_count": 0,
+                    "filename_prefix": "runtime/path_policy/upload",
+                    "format": "image/gif",
+                    "pingpong": False,
+                    "save_output": False,
+                },
+            },
+        }
+    }
+
+
+def _literal_prune_prompt(target: Path) -> dict[str, Any]:
+    return {
+        "prompt": {
+            "1": {
+                "class_type": "VHS_PruneOutputs",
+                "inputs": {
+                    "filenames": {"__value__": [True, [str(target)]]},
+                    "options": "All",
+                },
             },
         }
     }
@@ -323,6 +408,49 @@ def _default_checks(
     checks["prune_validates_all_before_delete"] = (
         _history_failed(prune_history) and inside.is_file() and outside.is_file()
     )
+
+    override_id = client.submit_prompt(_format_override_prompt(
+        layout.input / "images",
+        "runtime/path_policy/override/gif",
+    ))
+    override_history = client.wait_for_history(override_id, timeout=timeout)
+    override_outputs = sorted((layout.output / "runtime" / "path_policy" / "override").glob("*.gif"))
+    checks["deprecated_format_override_ignored"] = (
+        _history_succeeded(override_history) and len(override_outputs) == 1
+    )
+
+    existing_name = os.path.relpath(outside_directory, layout.input)
+    missing_name = os.path.relpath(outside_directory.parent / "outside-missing", layout.input)
+    existing_status, existing_document = _post_prompt(port, _upload_directory_prompt(existing_name))
+    missing_status, missing_document = _post_prompt(port, _upload_directory_prompt(missing_name))
+    existing_text = _node_error_text(existing_document, "1", existing_name)
+    missing_text = _node_error_text(missing_document, "1", missing_name)
+    checks["upload_traversal_denied_uniformly"] = (
+        existing_status == 400
+        and missing_status == 400
+        and existing_text != "[]"
+        and existing_text == missing_text
+        and str(outside_directory) not in existing_text
+        and str(layout.sandbox) not in existing_text
+    )
+
+    literal_target = layout.output / "runtime" / "path_policy" / "literal-target.tmp"
+    literal_target.write_text("keep", encoding="utf-8")
+    literal_status, _literal_document = _post_prompt(port, _literal_prune_prompt(literal_target))
+    if literal_status == 200:
+        prompt_id = _literal_document.get("prompt_id")
+        if isinstance(prompt_id, str):
+            client.wait_for_history(prompt_id, timeout=timeout)
+    checks["prune_literal_filenames_rejected"] = literal_status == 400 and literal_target.is_file()
+
+    status, _body = _request(
+        port,
+        "/vhs/viewvideo",
+        {"filename": "quoted", "type": "input", "format": "folder"},
+    )
+    checks["folder_preview_quoted_name_supported"] = status == 200
+    if status != 200:
+        print(f"path policy diagnostic: quoted_folder_preview_status={status}")
     return checks
 
 
@@ -415,6 +543,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         external_directory.mkdir()
         png = _synthetic_png()
         (input_images / "frame.png").write_bytes(png)
+        quoted_images = layout.input / "quoted"
+        quoted_images.mkdir()
+        (quoted_images / "it's.png").write_bytes(png)
         (outside_directory / "private.png").write_bytes(png)
         (external_directory / "external.png").write_bytes(png)
 

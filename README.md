@@ -248,6 +248,8 @@ Options:
 
 This fork validates all prune candidates are inside ComfyUI output/temp roots
 before deleting anything, and handles expanded image-sequence frame lists.
+`filenames` must be linked from a node that outputs `VHS_FILENAMES`; a typed
+or pasted literal value is rejected during prompt validation.
 
 ### Audio Nodes
 
@@ -321,9 +323,10 @@ root is configured.
 
 Server environment options:
 
-- `VHS_PATH_POLICY=host_roots|allowlist|legacy_local` selects the filesystem
-  mode. `legacy_local` restores arbitrary local reads for compatibility and is
-  accepted only for a loopback-only `trusted_local` deployment.
+- `VHS_PATH_POLICY=host_roots|allowlist` selects the filesystem mode. The
+  former `legacy_local` mode has been removed; setting it stops the node pack
+  from loading with a configuration error. Use `allowlist` with
+  `VHS_EXTERNAL_READ_ROOTS` to read media from additional directories.
 - `VHS_EXTERNAL_READ_ROOTS` is an OS-path-separator-delimited list of existing
   directories. It is required by `allowlist`, rejected in other modes, and
   grants read/list/preview capabilities only.
@@ -335,10 +338,17 @@ Server environment options:
   remote-restricted deployment.
 
 `VHS_STRICT_PATHS` is a temporary deprecated alias. During its compatibility
-window, any value maps to `host_roots`; it cannot enable `legacy_local`, and it
-must not be combined with `VHS_PATH_POLICY`. The alias is scheduled for removal
+window, any value maps to `host_roots`, and it must not be combined with
+`VHS_PATH_POLICY`. The alias is scheduled for removal
 in the next breaking release after the first public release containing this
 policy.
+
+Upload-list names used by Load Video, Load Video FFmpeg, Load Audio (Upload),
+and Load Images resolve inside one host root: input by default, or the root
+named by a trailing ` [input]`, ` [output]`, or ` [temp]` annotation.
+Subfolders are allowed. Absolute, drive-qualified, `..`, and control-character
+names are rejected before any filesystem check, and a missing name and an
+unauthorized name return the same validation message.
 
 HTTPS URL loading rejects credentials, fragments, non-HTTPS schemes, and
 non-public resolved IP addresses before launching the downloader. Downloads
@@ -380,6 +390,16 @@ Key fields:
 - `environment`: optional environment variables for the ffmpeg process.
 - `input_color_depth`: `8bit` or `16bit`.
 - `dim_alignment`: optional output dimension alignment requirement.
+
+Format widget values are validated against the selected format before any
+output is written: combo values must be one of that format's choices, `INT`
+and `FLOAT` values must be numbers within the declared `min`/`max`, and
+`BOOLEAN` values must be booleans. A `STRING` widget must be a single token of
+letters, digits, `_`, `.`, `+`, or `-` that does not start with `-`, and it
+cannot be used inside an ffmpeg filter argument (`-vf`, `-af`, `-lavfi`,
+`-filter_complex`); use a combo or numeric widget there instead. The
+deprecated `manual_format_widgets` input is no longer accepted; pass format
+widget values as regular inputs.
 
 Repeated simple `-vf` or `-af` filters are merged. A format that mixes
 `-filter_complex` with an additional simple filter is rejected explicitly;
@@ -490,6 +510,7 @@ manage a browser dependency.
 - Output behavior is stricter than upstream when it prevents silent corruption, metadata leakage, unsupported audio muxing, or unsafe deletion.
 - External custom `video_formats` should explicitly declare audio support with `supports_audio` and `audio_pass` when audio is intended.
 - Path authorization is enforced by a central, canonical capability policy. External read roots never grant output-write or delete access.
-- `legacy_local` is an explicit loopback-only compatibility mode; it is not the default and is rejected for remote-restricted deployments.
+- The `legacy_local` filesystem mode has been removed. Deployments that set it must switch to `allowlist` with explicit `VHS_EXTERNAL_READ_ROOTS`.
+- Workflows that relied on `manual_format_widgets` or on free-text format values outside the documented format-widget rules must be updated.
 - URL loading should remain disabled for LAN, reverse-proxy, public, or multi-user deployments unless downloader isolation and residual redirect/DNS risks are accepted separately.
 - This repository has independent versioning, validation, and release safeguards. It does not require an upstream pull request and does not imply that a Registry release has already occurred.

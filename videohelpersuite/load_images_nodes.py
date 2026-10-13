@@ -12,7 +12,8 @@ from .logger import logger
 from .path_policy import PathAccessDenied, PathCapability
 from .utils import (
     BIGMAX, authorize_path, calculate_file_hash,
-    get_sorted_dir_files_from_directory, strip_path,
+    get_sorted_dir_files_from_directory, resolve_annotated_media, strip_path,
+    validate_annotated_media,
 )
 
 
@@ -155,6 +156,11 @@ def load_images(directory: str, image_load_cap: int = 0, skip_first_images: int 
         raise FileNotFoundError("No images could be loaded from directory.")
     return images, masks, images.size(0)
 
+def _resolve_uploaded_directory(directory):
+    # SECURITY: upload names resolve only inside their annotated host root, on every host version.
+    return resolve_annotated_media(directory, PathCapability.LIST_DIRECTORY).canonical
+
+
 class LoadImagesFromDirectoryUpload:
     @classmethod
     def INPUT_TYPES(s):
@@ -185,18 +191,23 @@ class LoadImagesFromDirectoryUpload:
     CATEGORY = "Video Helper Suite 🎥🅥🅗🅢"
 
     def load_images(self, directory: str, **kwargs):
-        directory = folder_paths.get_annotated_filepath(strip_path(directory))
-        return load_images(directory, **kwargs)
+        return load_images(_resolve_uploaded_directory(directory), **kwargs)
     
     @classmethod
     def IS_CHANGED(s, directory: str, **kwargs):
-        directory = folder_paths.get_annotated_filepath(strip_path(directory))
+        try:
+            directory = _resolve_uploaded_directory(directory)
+        except PathAccessDenied:
+            return False
         return is_changed_load_images(directory, **kwargs)
 
+    # IMPORTANT: no **kwargs here; a VAR_KEYWORD validator disables host bounds checks.
     @classmethod
-    def VALIDATE_INPUTS(s, directory: str, **kwargs):
-        directory = folder_paths.get_annotated_filepath(strip_path(directory))
-        return validate_load_images(directory)
+    def VALIDATE_INPUTS(s, directory: str):
+        validation = validate_annotated_media(directory, PathCapability.LIST_DIRECTORY)
+        if validation is not True:
+            return validation
+        return validate_load_images(_resolve_uploaded_directory(directory))
 
 
 class LoadImagesFromDirectoryPath:
@@ -237,7 +248,7 @@ class LoadImagesFromDirectoryPath:
         return is_changed_load_images(directory, **kwargs)
 
     @classmethod
-    def VALIDATE_INPUTS(s, directory: str, **kwargs):
+    def VALIDATE_INPUTS(s, directory: str):
         if directory is None:
             return True
         return validate_load_images(strip_path(directory))

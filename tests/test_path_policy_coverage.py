@@ -55,6 +55,39 @@ class PathPolicyCoverageTests(unittest.TestCase):
             source = (MODULE_ROOT / filename).read_text(encoding="utf-8")
             self.assertNotIn("is_safe_path", source, filename)
 
+    def test_video_combine_hidden_inputs_are_bounded(self):
+        source = (MODULE_ROOT / "video_combine.py").read_text(encoding="utf-8")
+        self.assertNotIn("ContainsAll", source)
+
+    def test_format_names_are_not_joined_into_filesystem_paths(self):
+        source = (MODULE_ROOT / "format_registry.py").read_text(encoding="utf-8")
+        self.assertNotIn("base_formats_dir, format_name", source)
+        self.assertIn("get_video_format_paths", source)
+
+    def test_upload_loaders_do_not_depend_on_host_annotated_resolution(self):
+        for filename in ("load_video_nodes.py", "load_images_nodes.py", "nodes.py"):
+            source = (MODULE_ROOT / filename).read_text(encoding="utf-8")
+            self.assertNotIn("get_annotated_filepath", source, filename)
+            self.assertNotIn("exists_annotated_filepath", source, filename)
+            self.assertIn("resolve_annotated_media", source, filename)
+
+    def test_validators_do_not_disable_host_input_validation(self):
+        # SelectLatest always rejects, so accepting arbitrary keywords cannot skip a check.
+        always_rejecting = {"SelectLatest"}
+        for path in MODULE_ROOT.glob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ClassDef) or node.name in always_rejecting:
+                    continue
+                for item in node.body:
+                    if isinstance(item, ast.FunctionDef) and item.name == "VALIDATE_INPUTS":
+                        self.assertIsNone(item.args.kwarg, f"{path.name}:{node.name}")
+
+    def test_folder_preview_quotes_concat_entries(self):
+        source = (MODULE_ROOT / "server.py").read_text(encoding="utf-8")
+        self.assertIn("_ffconcat_quote(", source)
+        self.assertNotIn("f.write(\"file '\" + os.path.abspath(path)", source)
+
 
 if __name__ == "__main__":
     unittest.main()

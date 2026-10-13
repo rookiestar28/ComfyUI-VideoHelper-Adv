@@ -150,23 +150,12 @@ class PathPolicyTests(unittest.TestCase):
                 listen="127.0.0.1",
             )
 
-    def test_legacy_local_is_explicit_and_invalid_for_remote_profile(self):
-        local = self.policy({"VHS_PATH_POLICY": "legacy_local"})
-        self.assertEqual(
-            Path(local.authorize_path(
-                self.outside_file,
-                self.PathCapability.READ_MEDIA,
-            ).canonical),
-            self.outside_file.resolve(),
-        )
-        with self.assertRaises(self.PathAccessDenied):
-            local.authorize_path(self.outside_file, self.PathCapability.DELETE_ARTIFACT)
-
-        with self.assertRaises(self.PolicyConfigurationError):
-            self.policy(
-                {"VHS_PATH_POLICY": "legacy_local"},
-                listen="0.0.0.0",
-            )
+    def test_legacy_local_is_retired_with_actionable_migration_error(self):
+        for listen in ("127.0.0.1", "0.0.0.0"):
+            with self.subTest(listen=listen):
+                with self.assertRaisesRegex(self.PolicyConfigurationError, "allowlist") as captured:
+                    self.policy({"VHS_PATH_POLICY": "legacy_local"}, listen=listen)
+                self.assertNotIn(str(self.outside_dir), str(captured.exception))
 
     def test_migration_alias_is_host_roots_only_and_conflicts_with_new_setting(self):
         alias = self.policy({"VHS_STRICT_PATHS": "false"})

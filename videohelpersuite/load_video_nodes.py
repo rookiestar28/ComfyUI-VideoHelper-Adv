@@ -18,11 +18,12 @@ from comfy.utils import common_upscale, ProgressBar
 import nodes
 from comfy.k_diffusion.utils import FolderOfImages
 from .logger import logger
-from .utils import BIGMAX, DIMMAX, calculate_file_hash, get_sorted_dir_files_from_directory,\
+from .utils import BIGMAX, DIMMAX, get_sorted_dir_files_from_directory,\
         lazy_get_audio, hash_path, validate_path, strip_path, try_download_video,  \
         is_url, imageOrLatent, ffmpeg_path, ENCODE_ARGS, floatOrInt, debug_log, \
-        authorize_path
-from .path_policy import PathCapability
+        authorize_path, hash_annotated_media, resolve_annotated_media, \
+        validate_annotated_media
+from .path_policy import PathAccessDenied, PathCapability
 
 
 video_extensions = ['webm', 'mp4', 'mkv', 'gif', 'mov']
@@ -455,6 +456,14 @@ def load_video(meta_batch=None, unique_id=None, memory_limit_mb=None, vae=None,
 
 
 
+def _resolve_uploaded_video(video):
+    # SECURITY: upload names resolve only inside their annotated host root, on every host version.
+    try:
+        return resolve_annotated_media(video).canonical
+    except PathAccessDenied:
+        raise Exception("Selected video is unavailable or not authorized.") from None
+
+
 class LoadVideoUpload:
     @classmethod
     def INPUT_TYPES(s):
@@ -493,19 +502,16 @@ class LoadVideoUpload:
     FUNCTION = "load_video"
 
     def load_video(self, **kwargs):
-        kwargs['video'] = folder_paths.get_annotated_filepath(strip_path(kwargs['video']))
+        kwargs['video'] = _resolve_uploaded_video(kwargs['video'])
         return load_video(**kwargs)
 
     @classmethod
     def IS_CHANGED(s, video, **kwargs):
-        image_path = folder_paths.get_annotated_filepath(video)
-        return calculate_file_hash(image_path)
+        return hash_annotated_media(video)
 
     @classmethod
     def VALIDATE_INPUTS(s, video):
-        if not folder_paths.exists_annotated_filepath(video):
-            return "Invalid video file: {}".format(video)
-        return True
+        return validate_annotated_media(video)
 
 
 class LoadVideoPath:
@@ -595,7 +601,7 @@ class LoadVideoFFmpegUpload:
     FUNCTION = "load_video"
 
     def load_video(self, **kwargs):
-        kwargs['video'] = folder_paths.get_annotated_filepath(strip_path(kwargs['video']))
+        kwargs['video'] = _resolve_uploaded_video(kwargs['video'])
         image, _, audio, video_info =  load_video(**kwargs, generator=ffmpeg_frame_generator)
         if isinstance(image, dict):
             return (image, None, audio, video_info)
@@ -605,14 +611,11 @@ class LoadVideoFFmpegUpload:
 
     @classmethod
     def IS_CHANGED(s, video, **kwargs):
-        image_path = folder_paths.get_annotated_filepath(video)
-        return calculate_file_hash(image_path)
+        return hash_annotated_media(video)
 
     @classmethod
     def VALIDATE_INPUTS(s, video):
-        if not folder_paths.exists_annotated_filepath(video):
-            return "Invalid video file: {}".format(video)
-        return True
+        return validate_annotated_media(video)
 
 
 class LoadVideoFFmpegPath:
