@@ -194,7 +194,9 @@ async function uploadViaAssetRoute(file, progressCallback, options={}) {
     if (file.type) {
         body.append("mime_type", file.type)
     }
-    const response = await sendMultipartUpload("/api/assets", body, progressCallback, options)
+    // IMPORTANT: route-relative like the host asset service; "/api/assets" double-prefixes on
+    // frontends older than v1.43.3 and turns every asset upload into a fallback.
+    const response = await sendMultipartUpload("/assets", body, progressCallback, options)
     response.path = normalizeAssetUploadPath(response.json)
     response.route = "asset"
     return response

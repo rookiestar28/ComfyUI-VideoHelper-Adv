@@ -105,7 +105,10 @@ function searchBox(event, [x,y], node) {
         } else {
             if (e.keyCode == 9) {
                 //TAB
-                input.value = last_path + options_element.firstChild.innerText;
+                const firstOption = options_element.firstChild
+                if (firstOption) {
+                    input.value = last_path + firstOption.innerText;
+                }
                 e.preventDefault();
                 e.stopPropagation();
             } else if (e.ctrlKey && (e.keyCode == 87 || e.keyCode == 66)) {
@@ -144,7 +147,8 @@ function searchBox(event, [x,y], node) {
         dialog.close();
         this.prompt = false;
     });
-    var rect = app.canvas.canvas.getBoundingClientRect();
+    const canvasElement = app.canvas.canvas
+    var rect = canvasElement.getBoundingClientRect();
     var offsetx = -20;
     var offsety = -20;
     if (rect) {
@@ -156,8 +160,9 @@ function searchBox(event, [x,y], node) {
         dialog.style.left = event.clientX + offsetx + "px";
         dialog.style.top = event.clientY + offsety + "px";
     } else {
-        dialog.style.left = canvas.width * 0.5 + offsetx + "px";
-        dialog.style.top = canvas.height * 0.5 + offsety + "px";
+        // IMPORTANT: there is no global `canvas`; center on the host canvas element instead.
+        dialog.style.left = canvasElement.width * 0.5 + offsetx + "px";
+        dialog.style.top = canvasElement.height * 0.5 + offsety + "px";
     }
     //Search code
     let options = []
@@ -281,7 +286,9 @@ function roundToPrecision(num, precision) {
     }
     return strnum
 }
-function inner_value_change(widget, value, node, pos) {
+// IMPORTANT: pass the originating event explicitly; the implicit global `event` is undefined
+// once the change runs from a timer or prompt callback.
+function inner_value_change(widget, value, node, pos, event) {
   widget.value = value
   if (widget.options?.property && widget.options.property in node.properties) {
     node.setProperty(widget.options.property, value)
@@ -439,7 +446,7 @@ function mouseAnnotated(event, [x, y], node) {
         if (event.click_time < 200 && !isButton) {
             const d_callback = (v) => {
                 this.value = this.parseValue?.(v) ?? Number(v)
-                inner_value_change(this, this.value, node, [x, y])
+                inner_value_change(this, this.value, node, [x, y], event)
             }
             const dialog = app.canvas.prompt(
                 'Value',
@@ -471,7 +478,7 @@ function mouseAnnotated(event, [x, y], node) {
     if (old_value != this.value)
         setTimeout(
             function () {
-                inner_value_change(this, this.value, node, [x, y])
+                inner_value_change(this, this.value, node, [x, y], event)
             }.bind(this),
             20
         )

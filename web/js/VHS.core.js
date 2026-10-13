@@ -434,12 +434,18 @@ function startDraggingItems(node, pointer) {
     app.canvas.processSelect(node, pointer.eDown, true)
     app.canvas.isDragging = true
 }
+// IMPORTANT: litegraph's findFirstNode is a module utility, not a global; keep this local copy.
+function firstSelectedNode(items) {
+    for (const item of items ?? []) {
+        if (LiteGraph.LGraphNode && item instanceof LiteGraph.LGraphNode) return item
+    }
+}
 function processDraggedItems(e) {
     if (e.shiftKey || LiteGraph.alwaysSnapToGrid)
       app.canvas?.graph?.snapToGrid(app.canvas.selectedItems)
     app.canvas.dirty_canvas = true
     app.canvas.dirty_bgcanvas = true
-    app.canvas.onNodeMoved?.(findFirstNode(app.canvas.selectedItems))
+    app.canvas.onNodeMoved?.(firstSelectedNode(app.canvas.selectedItems))
 }
 function allowDragFromWidget(widget) {
     widget.onPointerDown = function(pointer, node) {
@@ -538,25 +544,30 @@ function cloneType(nodeType, nodeData) {
                     if (!this.outputs[0].links) {
                         return
                     }
+                    // IMPORTANT: links live in the node's own graph; app.graph is wrong inside subgraphs.
+                    const graph = this.graph ?? app.graph
                     let removed_links = []
                     for (let link_id of this.outputs[0].links) {
-                        let link = app.graph.links[link_id]
+                        let link = graph.links[link_id]
                         if (!link) {
                             console.warn("[VHS] Missing link metadata during type clone", link_id)
                             continue
                         }
-                        let target_node = app.graph.getNodeById(link.target_id)
+                        let target_node = graph.getNodeById(link.target_id)
                         let target_input = target_node.inputs[link.target_slot]
                         let keep = LiteGraph.isValidConnection(new_type, target_input.type)
                         if (!keep) {
-                            link.disconnect(app.graph, 'input')
+                            link.disconnect(graph, 'input')
                             removed_links.push(link_id)
                         }
                         target_node.onConnectionsChange?.(LiteGraph.INPUT,
                             link.target_slot, keep, link, target_input)
                     }
-                    this.outputs[0].links = this.outputs[0].links
-                        .filter((v) => !removed_links.includes(v))
+                    // litegraph may already have reset links to null after the last disconnect.
+                    if (this.outputs[0].links) {
+                        this.outputs[0].links = this.outputs[0].links
+                            .filter((v) => !removed_links.includes(v))
+                    }
                 }
             }, 50)
         }
@@ -566,7 +577,8 @@ function cloneType(nodeType, nodeData) {
         if (contype == LiteGraph.INPUT && slot == 0) {
             let new_type = "VHS_DUMMY_NONE"
             if (iscon && linf) {
-                new_type = app.graph.getNodeById(linf.origin_id).outputs[linf.origin_slot].type
+                const origin = (this.graph ?? app.graph).getNodeById(linf.origin_id)
+                new_type = origin?.outputs?.[linf.origin_slot]?.type ?? "VHS_DUMMY_NONE"
             }
             if (this.linkTimeout) {
                 clearTimeout(this.linkTimeout)
@@ -705,7 +717,7 @@ function addLoadCommon(nodeType, nodeData) {
         const heightWidget = this.widgets.find((w) => w.name === "custom_height");
         function updateAR(value) {
             let new_ar = -1
-            if (widthWidget.value & heightWidget.value) {
+            if (widthWidget.value && heightWidget.value) {
                 new_ar = widthWidget.value / heightWidget.value
             }
             if (new_ar != prior_ar) {
@@ -892,12 +904,12 @@ app.registerExtension({
                 let new_widgets = []
                 if (this.widgets) {
                     for (let w of this.widgets) {
-                        let input = this.constructor.nodeData.input
-                        let config = input?.required[w.name] ?? input.optional[w.name]
+                        let input = this.constructor.nodeData?.input
+                        let config = input?.required?.[w.name] ?? input?.optional?.[w.name]
                         if (!config) {
                             continue
                         }
-                        if (w?.type == "text" && config[1].vhs_path_extensions) {
+                        if (w?.type == "text" && config[1]?.vhs_path_extensions) {
                             new_widgets.push(app.widgets.VHSPATH({}, w.name, ["VHSPATH", config[1]]));
                         } else {
                             new_widgets.push(w)
@@ -1152,7 +1164,7 @@ app.registerExtension({
                         if (v == 0) {
                             return
                         }
-                        const s = this.options.step
+                        const s = this.options.step || 1
                         let sh = this.options.mod ?? 0
                         this.value = Math.round((v - sh) / s) * s + sh
                     },

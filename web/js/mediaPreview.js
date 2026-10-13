@@ -213,7 +213,8 @@ function addVideoPreview(nodeType, isInput=true) {
                 }
                 previewWidget.value.params = {}
             }
-            if (!Object.entries(params).some(([k,v]) => previewWidget.value.params[k] !== v)) {
+            // IMPORTANT: a forced update (same-name re-upload) must refresh even with unchanged params.
+            if (!force_update && !Object.entries(params).some(([k,v]) => previewWidget.value.params[k] !== v)) {
                 return
             }
             Object.assign(previewWidget.value.params, params)
@@ -281,6 +282,9 @@ function addVideoPreview(nodeType, isInput=true) {
                 debugLog("preview_unsupported_format", { params })
             }
             delete previewNode.video_query
+            // IMPORTANT: only the latest query may write video_query or status; older responses
+            // can resolve later and would otherwise overwrite the current source's metadata.
+            const querySequence = previewWidget.querySequence = (previewWidget.querySequence ?? 0) + 1
             const doQuery = async () => {
                 if (!previewWidget?.value?.params?.filename) {
                     return
@@ -292,8 +296,15 @@ function addVideoPreview(nodeType, isInput=true) {
                     query_res = await fetchWithOptionalAuth(qurl)
                     query = await query_res.json()
                 } catch(e) {
+                    if (querySequence !== previewWidget.querySequence) {
+                        return
+                    }
                     previewWidget.setStatus("Preview metadata lookup failed.")
                     debugLog("video_query_failed", { name: e?.name })
+                    return
+                }
+                if (querySequence !== previewWidget.querySequence) {
+                    debugLog("video_query_stale", { status: query_res.status })
                     return
                 }
                 if (!query_res.ok || query?.error) {

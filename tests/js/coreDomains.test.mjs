@@ -89,7 +89,7 @@ test('pathless successful asset upload is rejected without a legacy replay', asy
       { acceptedTypes: ['video/mp4'], label: 'Video' },
     );
 
-    assert.deepEqual(routes, ['/api/assets']);
+    assert.deepEqual(routes, ['/assets']);
     assert.equal(result, undefined);
     assert.match(alerts[0], /No second upload/);
   } finally {

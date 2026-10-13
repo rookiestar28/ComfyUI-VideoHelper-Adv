@@ -125,7 +125,12 @@ api.addEventListener('b_preview', async (e) => {
     const index = dv.getUint32(4)
     const idlen = dv.getUint8(8)
     const id = td.decode(dv.buffer.slice(9,9+idlen))
-    previewImagesDict[id][index] = await window.createImageBitmap(e.detail.slice(24))
+    const previewImages = previewImagesDict[id]
+    if (!previewImages) {
+        // A frame for a preview this page never started; ignore it instead of throwing.
+        return false
+    }
+    previewImages[index] = await window.createImageBitmap(e.detail.slice(24))
     return false
 }, true);
 

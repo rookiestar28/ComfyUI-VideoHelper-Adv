@@ -16,7 +16,7 @@ async function uploadCase(asset, { status = 200, features = { assets: true }, op
       api: { fetchApi: async (route, request) => {
         if (route === '/features') return reply(features);
         writes.push({ route, body: request.body });
-        if (route === '/api/assets') {
+        if (route === '/assets') {
           if (failure) throw failure;
           return reply(asset, status);
         }
@@ -35,7 +35,7 @@ async function uploadCase(asset, { status = 200, features = { assets: true }, op
 test('canonical loader_path is accepted once and takes precedence over user metadata', async () => {
   const { result, writes, alerts } = await uploadCase({ loader_path: 'hash/影片 clip.mp4', user_metadata: { filename: 'wrong.mp4' }, tags: ['input'] });
   assert.equal(result.path, 'hash/影片 clip.mp4');
-  assert.deepEqual(writes.map(value => value.route), ['/api/assets']);
+  assert.deepEqual(writes.map(value => value.route), ['/assets']);
   assert.equal(alerts.length, 0);
 });
 
@@ -75,7 +75,7 @@ for (const status of [404, 405, 501]) {
   test(`HTTP ${status} unavailable asset route permits legacy fallback`, async () => {
     const { result, writes } = await uploadCase({}, { status });
     assert.equal(result.path, 'clip.mp4');
-    assert.deepEqual(writes.map(value => value.route), ['/api/assets', '/upload/image']);
+    assert.deepEqual(writes.map(value => value.route), ['/assets', '/upload/image']);
   });
 }
 
