@@ -24,7 +24,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by the Python 3.10 C
 APPROVED_PUBLISHER_ID = "rookiestar"
 APPROVED_NODE_ID = "comfyui-videohelper-adv"
 # IMPORTANT: advance this approval with project.version; a stale value blocks package validation.
-APPROVED_VERSION = "2.1.0"
+APPROVED_VERSION = "3.0.0"
 APPROVED_DISPLAY_NAME = "ComfyUI-VideoHelper-Adv"
 APPROVED_REPOSITORY = "https://github.com/rookiestar28/ComfyUI-VideoHelper-Adv"
 RELEASE_ENVIRONMENT = "comfy-registry-release"
