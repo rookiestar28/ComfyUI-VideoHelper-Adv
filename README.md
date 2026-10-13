@@ -452,11 +452,23 @@ Both wrappers delegate to the same repository check runner and execute:
 - JavaScript syntax checks for `web/js/*.js`
 - Node built-in helper tests under `tests/js/`
 - all `video_formats/*.json` schema checks
-- `git diff --check`
+- whitespace checks with `git diff --check` for unstaged and staged changes,
+  plus the committed range since a base when one is given
+
+To also check commits that are not on `main` yet, pass a base through either
+wrapper or set `VHS_DIFF_CHECK_BASE`:
+
+```powershell
+powershell -NoProfile -File scripts/run_repo_checks.ps1 --diff-base main
+```
+
+A base that is not a reachable commit stops the run with exit code 2, the same
+code used for a missing `.venv` or an unsupported Node.js version.
 
 The same contract runs in `.github/workflows/validate.yml` on Ubuntu with
-Python 3.10/3.12 and Windows with Python 3.12. Hosted validation is
-publication-incapable.
+Python 3.10/3.12 and Windows with Python 3.12. Its whitespace base is the pull
+request base, the previous `main` commit for pushes to `main`, or `origin/main`
+for other branch pushes. Hosted validation is publication-incapable.
 
 Additional useful checks:
 

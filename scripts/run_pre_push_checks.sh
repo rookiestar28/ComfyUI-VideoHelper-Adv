@@ -19,7 +19,7 @@ do
         fi
         ;;
     esac
-    exec "$candidate" "$runner_path"
+    exec "$candidate" "$runner_path" "$@"
   fi
 done
 

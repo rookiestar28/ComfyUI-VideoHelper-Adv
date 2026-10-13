@@ -351,7 +351,6 @@ query_cache = AuthorizedMetadataCache(max_entries=128)
 async def query_video(request):
     query = request.rel_url.query
     filepath = await resolve_path(query)
-    #TODO: cache lookup
     if isinstance(filepath, web.Response):
         return filepath
     filepath = filepath[0]

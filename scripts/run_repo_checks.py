@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import shutil
@@ -11,6 +12,12 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
+
+
+DIFF_BASE_ENV = "VHS_DIFF_CHECK_BASE"
+_ABSENT_COMMIT = re.compile(r"0{40}|0{64}")
+_DIFF_BASE_REF = re.compile(r"[0-9A-Za-z][0-9A-Za-z._/~^-]{0,254}")
+_COMMIT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
 @dataclass(frozen=True)
@@ -22,8 +29,17 @@ class CheckStep:
     stdin_path: Path | None = None
 
 
-def build_check_steps(repo_root: Path, python: Path, node: Path) -> list[CheckStep]:
-    """Build the ordered, platform-neutral repository validation contract."""
+def build_check_steps(
+    repo_root: Path,
+    python: Path,
+    node: Path,
+    diff_base: str | None = None,
+) -> list[CheckStep]:
+    """Build the ordered, platform-neutral repository validation contract.
+
+    ``diff_base`` is a resolved commit ID; when present, committed candidate changes
+    since its merge base with ``HEAD`` are whitespace-checked as well.
+    """
 
     python_text = str(python)
     node_text = str(node)
@@ -69,10 +85,63 @@ def build_check_steps(repo_root: Path, python: Path, node: Path) -> list[CheckSt
                 "video-format-validation",
                 (python_text, "scripts/validate_video_formats.py"),
             ),
-            CheckStep("git-diff-check", ("git", "diff", "--check")),
+            CheckStep("git-diff-check:unstaged", ("git", "diff", "--check")),
+            CheckStep("git-diff-check:staged", ("git", "diff", "--cached", "--check")),
         )
     )
+    if diff_base is not None:
+        steps.append(
+            CheckStep(
+                "git-diff-check:candidate",
+                ("git", "diff", "--check", f"{diff_base}...HEAD"),
+            )
+        )
     return steps
+
+
+def normalize_diff_base(value: str | None) -> str | None:
+    """Return a candidate base ref, or ``None`` when no candidate range applies.
+
+    Empty values and the all-zero ID that Git hosts send for newly created refs mean
+    "no candidate range". Anything else must look like a plain commit ID or ref name.
+    """
+
+    if value is None:
+        return None
+    text = value.strip()
+    if not text or _ABSENT_COMMIT.fullmatch(text):
+        return None
+    # SECURITY: the value becomes a git argument; a leading '-' would be parsed as an option.
+    if _DIFF_BASE_REF.fullmatch(text) is None:
+        raise ValueError(f"Unsupported diff base {text!r}; pass a commit ID or a ref name.")
+    return text
+
+
+def resolve_diff_base(
+    repo_root: Path,
+    value: str | None,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> str | None:
+    """Resolve an optional diff base to a commit ID, failing closed when it is unreachable."""
+
+    ref = normalize_diff_base(value)
+    if ref is None:
+        return None
+    result = runner(
+        ("git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"),
+        cwd=str(repo_root),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    commit = (result.stdout or "").strip() if result.returncode == 0 else ""
+    if _COMMIT_ID.fullmatch(commit) is None:
+        raise ValueError(
+            f"Diff base {ref!r} is not a commit in this checkout; "
+            "fetch its history or pass a reachable base."
+        )
+    return commit
 
 
 def run_steps(
@@ -138,7 +207,21 @@ def is_project_venv_python(repo_root: Path, executable: Path) -> bool:
     return False
 
 
-def main() -> int:
+def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--diff-base",
+        default=None,
+        help=(
+            "Commit or ref whose merge base with HEAD starts the committed candidate range "
+            f"for whitespace checks (default: ${DIFF_BASE_ENV}, else no candidate range)."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
     repo_root = Path(__file__).resolve().parents[1]
     python = Path(sys.executable)
     if not is_project_venv_python(repo_root, python):
@@ -170,9 +253,21 @@ def main() -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
+    base_source = "--diff-base" if args.diff_base is not None else DIFF_BASE_ENV
+    base_value = args.diff_base if args.diff_base is not None else os.environ.get(DIFF_BASE_ENV)
+    try:
+        diff_base = resolve_diff_base(repo_root, base_value)
+    except ValueError as exc:
+        print(f"ERROR: {base_source}: {exc}", file=sys.stderr)
+        return 2
+
     print(f"[repo-checks] Python: {python}", flush=True)
     print(f"[repo-checks] Node: {version_result.stdout.strip()} ({node}); major={major}", flush=True)
-    return run_steps(build_check_steps(repo_root, python, node), repo_root)
+    if diff_base is None:
+        print("[repo-checks] Diff base: none (unstaged and staged changes only)", flush=True)
+    else:
+        print(f"[repo-checks] Diff base: {diff_base} (from {base_source})", flush=True)
+    return run_steps(build_check_steps(repo_root, python, node, diff_base), repo_root)
 
 
 if __name__ == "__main__":

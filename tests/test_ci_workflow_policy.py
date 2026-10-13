@@ -7,6 +7,12 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "validate.yml"
+# IMPORTANT: dev is rebased and force-pushed, so its event `before` SHA can be unreachable.
+EXPECTED_DIFF_BASE = (
+    "${{ github.event.pull_request.base.sha"
+    " || (github.ref == 'refs/heads/main' && github.event.before)"
+    " || 'origin/main' }}"
+)
 
 
 class CIWorkflowPolicyTests(unittest.TestCase):
@@ -84,6 +90,21 @@ class CIWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("-r requirements.txt", requirements)
         self.assertIn("Pillow", requirements)
         self.assertIn("PyYAML", requirements)
+
+    def test_candidate_whitespace_base_is_reachable_and_passed_through_env(self):
+        checkout = next(
+            step for step in self.job["steps"]
+            if str(step.get("uses", "")).startswith("actions/checkout@")
+        )
+        self.assertEqual(checkout["with"]["fetch-depth"], 0)
+        check_steps = [
+            step for step in self.job["steps"]
+            if "run_pre_push_checks.sh" in step.get("run", "")
+            or "run_repo_checks.ps1" in step.get("run", "")
+        ]
+        self.assertEqual(len(check_steps), 2)
+        for step in check_steps:
+            self.assertEqual(step.get("env", {}).get("VHS_DIFF_CHECK_BASE"), EXPECTED_DIFF_BASE)
 
 
 if __name__ == "__main__":

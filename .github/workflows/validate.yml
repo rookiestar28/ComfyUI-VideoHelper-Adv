@@ -33,6 +33,7 @@ jobs:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Python
@@ -55,6 +56,10 @@ jobs:
       - name: Run repository checks (Linux)
         if: runner.os == 'Linux'
         shell: bash
+        env:
+          # IMPORTANT: dev is rebased and force-pushed, so its event "before" commit can be
+          # unreachable; only main pushes use it, other pushes compare against origin/main.
+          VHS_DIFF_CHECK_BASE: ${{ github.event.pull_request.base.sha || (github.ref == 'refs/heads/main' && github.event.before) || 'origin/main' }}
         run: bash scripts/run_pre_push_checks.sh
 
       - name: Create environment and install test requirements (Windows)
@@ -67,4 +72,8 @@ jobs:
       - name: Run repository checks (Windows)
         if: runner.os == 'Windows'
         shell: powershell
+        env:
+          # IMPORTANT: dev is rebased and force-pushed, so its event "before" commit can be
+          # unreachable; only main pushes use it, other pushes compare against origin/main.
+          VHS_DIFF_CHECK_BASE: ${{ github.event.pull_request.base.sha || (github.ref == 'refs/heads/main' && github.event.before) || 'origin/main' }}
         run: powershell -NoProfile -File scripts/run_repo_checks.ps1
